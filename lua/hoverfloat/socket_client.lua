@@ -53,24 +53,64 @@ local function create_message(msg_type, data)
   return json_str
 end
 
--- Send raw data through socket
+-- Send raw data through socket (create new connection per message to match TUI behavior)
 local function send_raw(data)
-  if not state.socket or not state.connected then
-    debug_log("Cannot send: not connected")
+  debug_log("Creating new connection for message")
+  
+  -- Create new socket for this message
+  local socket = uv.new_pipe(false)
+  if not socket then
+    debug_log("Failed to create socket")
     return false
   end
   
-  local success = pcall(function()
-    state.socket:write(data)
+  local success = false
+  local connected = false
+  
+  -- Connect to socket
+  socket:connect(state.socket_path, function(err)
+    if err then
+      debug_log("Connection failed for send: " .. err)
+      socket:close()
+      return
+    end
+    
+    connected = true
+    debug_log("Connected for send, writing data")
+    
+    -- Write data and close immediately (matching TUI expectation)
+    local write_success = pcall(function()
+      socket:write(data, function(write_err)
+        if write_err then
+          debug_log("Write failed: " .. write_err)
+        else
+          debug_log("Data written successfully")
+          success = true
+        end
+        socket:close()
+      end)
+    end)
+    
+    if not write_success then
+      debug_log("Write operation failed")
+      socket:close()
+    end
   end)
   
-  if not success then
-    debug_log("Failed to send data")
-    M.disconnect()
-    return false
-  end
+  -- Wait a moment for the async operation to complete
+  local timeout = vim.fn.timer_start(1000, function()
+    if not connected then
+      debug_log("Send timeout")
+      socket:close()
+    end
+  end)
   
-  return true
+  -- Small delay to allow async operation
+  vim.defer_fn(function()
+    vim.fn.timer_stop(timeout)
+  end, 100)
+  
+  return true  -- Return true since we're handling async
 end
 
 -- Handle socket connection
@@ -108,71 +148,23 @@ local function on_error(err)
   end
 end
 
--- Connect to Unix domain socket
+-- Connect to Unix domain socket (now just sets the path - actual connections are per-message)
 function M.connect(socket_path)
-  if state.connected then
-    debug_log("Already connected")
-    return true
-  end
-  
   if socket_path then
     state.socket_path = socket_path
   end
   
-  state.connection_attempts = state.connection_attempts + 1
-  debug_log("Connecting to " .. state.socket_path .. " (attempt " .. state.connection_attempts .. ")")
+  debug_log("Socket path set to: " .. state.socket_path)
+  state.connected = true  -- We're "connected" in the sense that we have a path to connect to
   
-  -- Create new socket
-  state.socket = uv.new_pipe(false)
-  
-  -- Set up connection
-  state.socket:connect(state.socket_path, function(err)
-    if err then
-      debug_log("Connection failed: " .. err)
-      on_error(err)
-      return
-    end
-    
-    on_connect()
-    
-    -- Set up read handler (we don't expect to receive data, but handle it gracefully)
-    state.socket:read_start(function(read_err, data)
-      if read_err then
-        on_error("Read error: " .. read_err)
-        return
-      end
-      
-      if not data then
-        -- End of stream
-        on_disconnect()
-        return
-      end
-      
-      -- We don't expect data from display window, but log it if we get any
-      debug_log("Received unexpected data: " .. data)
-    end)
-  end)
-  
-  -- Set connection timeout
-  local timeout_timer = vim.fn.timer_start(config.connect_timeout, function()
-    if not state.connected then
-      debug_log("Connection timeout")
-      on_error("Connection timeout")
-    end
-  end)
-  
-  -- Clear timeout when connection succeeds
-  if state.connected then
-    vim.fn.timer_stop(timeout_timer)
-  end
-  
-  return state.connected
+  return true
 end
 
--- Disconnect from socket
+-- Disconnect from socket (now just clears the path)
 function M.disconnect()
   debug_log("Disconnecting...")
-  on_disconnect()
+  state.connected = false
+  state.socket_path = nil
 end
 
 -- Send context update message
@@ -214,9 +206,9 @@ function M.send_ping()
   return send_raw(message)
 end
 
--- Check if connected
+-- Check if connected (now just checks if we have a socket path)
 function M.is_connected()
-  return state.connected
+  return state.connected and state.socket_path ~= nil
 end
 
 -- Get connection status
