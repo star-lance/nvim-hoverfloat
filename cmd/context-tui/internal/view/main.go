@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/config"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
@@ -19,14 +19,14 @@ type ViewData struct {
 	ErrorMsg       string
 	Connected      bool
 	LastUpdate     time.Time
-	Focus          int // FocusArea as int
+	Focus          int
 	ShowHover      bool
 	ShowReferences bool
 	ShowDefinition bool
 	ShowTypeInfo   bool
 	MenuVisible    bool
 	MenuSelection  int
-	
+
 	// Viewports for scrollable content
 	HoverViewport      *viewport.Model
 	ReferencesViewport *viewport.Model
@@ -200,16 +200,16 @@ func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) str
 	// Format hover content and set it in the viewport
 	content := formatHoverContent(data.Context.Hover, data.HoverViewport.Width, s)
 	data.HoverViewport.SetContent(content)
-	
+
 	// Get the viewport's view (handles scrolling)
 	viewportContent := data.HoverViewport.View()
-	
+
 	// Get background color from config
 	bgColor := config.Config.Colors.Background.Secondary
 	if focused {
 		bgColor = config.Config.Colors.Background.Selection
 	}
-	
+
 	// Enforce consistent full-width background on viewport content
 	contentFormatted := enforceConsistentBackground(viewportContent, width-4, bgColor)
 
@@ -393,10 +393,11 @@ func formatHoverContent(hover []string, width int, s *styles.Styles) string {
 		// Join all lines and render as markdown
 		content := strings.Join(hover, "\n")
 		rendered, err := renderMarkdown(content, width-4, true) // Use dark theme
-		if err == nil {
+		if err == nil && rendered != content {
+			// Only use rendered if it's actually different (glamour worked)
 			return rendered
 		}
-		// Fall back to simple rendering if markdown parsing fails
+		// Fall back to simple rendering if markdown parsing fails or returned unchanged
 	}
 
 	// Simple text rendering with basic syntax highlighting
@@ -646,8 +647,12 @@ func isMarkdownContent(content []string) bool {
 // renderMarkdown uses glamour to render markdown content with centralized styling
 func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
 	// Use centralized markdown configuration
-	if config.Config == nil || !config.Config.Markdown.UseGlamour {
-		return content, nil
+	if config.Config == nil {
+		return content, fmt.Errorf("config not loaded")
+	}
+	
+	if !config.Config.Markdown.UseGlamour {
+		return content, fmt.Errorf("glamour disabled")
 	}
 
 	// Use configured theme
@@ -675,5 +680,10 @@ func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
 		return content, err
 	}
 
-	return strings.TrimSpace(rendered), nil
+	result := strings.TrimSpace(rendered)
+	if result == "" {
+		return content, fmt.Errorf("empty result")
+	}
+	
+	return result, nil
 }

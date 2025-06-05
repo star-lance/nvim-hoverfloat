@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/view"
@@ -108,7 +108,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 		m.Ready = true
-		
+
 		// Update viewport dimensions based on available space
 		m.updateViewportSizes()
 		return m, nil
@@ -120,7 +120,10 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Context = (*Context)(msg.Data)
 		m.LastUpdate = time.Now()
 		m.ErrorMsg = ""
-		
+
+		// Update viewport sizes when new content arrives
+		m.updateViewportSizes()
+
 		// Continue listening for more messages and force a redraw
 		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
 
@@ -265,12 +268,12 @@ func (m *App) updateViewportSizes() {
 	if m.Width == 0 || m.Height == 0 {
 		return
 	}
-	
+
 	// Calculate available space for content (minus header and footer)
 	headerHeight := 3
 	footerHeight := 3
 	contentHeight := m.Height - headerHeight - footerHeight
-	
+
 	// Divide content area among visible sections
 	visibleSections := 0
 	if m.ShowHover {
@@ -285,15 +288,15 @@ func (m *App) updateViewportSizes() {
 	if m.ShowTypeInfo {
 		visibleSections++
 	}
-	
+
 	if visibleSections == 0 {
 		return
 	}
-	
+
 	// Calculate section height (with minimum of 5 lines)
 	sectionHeight := max(5, contentHeight/visibleSections)
 	width := m.Width - 4 // Account for padding
-	
+
 	// Update each viewport
 	m.hoverViewport.Width = width
 	m.hoverViewport.Height = sectionHeight
@@ -309,13 +312,13 @@ func (m *App) updateViewportSizes() {
 func (m *App) scrollCurrentViewportDown() *App {
 	switch m.Focus {
 	case FocusHover:
-		m.hoverViewport.LineDown(3)
+		m.hoverViewport.ScrollDown(3)
 	case FocusReferences:
-		m.referencesViewport.LineDown(3)
+		m.referencesViewport.ScrollDown(3)
 	case FocusDefinition:
-		m.definitionViewport.LineDown(1)
+		m.definitionViewport.ScrollDown(1)
 	case FocusTypeDefinition:
-		m.typeInfoViewport.LineDown(1)
+		m.typeInfoViewport.ScrollDown(1)
 	}
 	return m
 }
@@ -324,13 +327,13 @@ func (m *App) scrollCurrentViewportDown() *App {
 func (m *App) scrollCurrentViewportUp() *App {
 	switch m.Focus {
 	case FocusHover:
-		m.hoverViewport.LineUp(3)
+		m.hoverViewport.ScrollUp(3)
 	case FocusReferences:
-		m.referencesViewport.LineUp(3)
+		m.referencesViewport.ScrollUp(3)
 	case FocusDefinition:
-		m.definitionViewport.LineUp(1)
+		m.definitionViewport.ScrollUp(1)
 	case FocusTypeDefinition:
-		m.typeInfoViewport.LineUp(1)
+		m.typeInfoViewport.ScrollUp(1)
 	}
 	return m
 }
@@ -468,7 +471,7 @@ func (m *App) listenForMessages() tea.Cmd {
 			conn.Close()
 			return socket.ErrorMsg("Failed to decode message")
 		}
-		
+
 		// Close connection after reading one message
 		conn.Close()
 
@@ -480,5 +483,3 @@ func (m *App) listenForMessages() tea.Cmd {
 		return nil
 	}
 }
-
-
