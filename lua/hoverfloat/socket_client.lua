@@ -178,8 +178,18 @@ end
 -- Send context update message
 function M.send_context_update(context_data)
   local message = create_message("context_update", context_data)
-  debug_log("Sending context update (" .. #message .. " bytes)")
-  return send_raw(message)
+  local timestamp = os.date("%H:%M:%S.%03d", math.floor(vim.uv.now() / 1000))
+  local word = context_data.hover and #context_data.hover > 0 and "with_hover" or "no_hover"
+  
+  debug_log(string.format("[%s] Sending context update (%d bytes, %s, %s:%d)", 
+    timestamp, #message, word, context_data.file or "unknown", context_data.line or 0))
+  
+  local success = send_raw(message)
+  if not success then
+    debug_log("FAILED to send context update - socket error")
+  end
+  
+  return success
 end
 
 -- Send error message

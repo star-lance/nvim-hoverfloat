@@ -477,6 +477,8 @@ function M.setup(opts)
 
   -- Initialize socket client
   socket_client.setup(state.config.communication)
+  -- Enable socket debug logging
+  socket_client.enable_debug()
 
   -- Setup plugin components
   setup_autocmds()
