@@ -1,29 +1,60 @@
+-- lua/hoverfloat/init.lua - Main plugin entry point
 local M = {}
 
-local ipc = require('hoverfloat.ipc')
+local lsp_collector = require('hoverfloat.lsp_collector')
+local socket_client = require('hoverfloat.socket_client')
 
+-- Plugin configuration
 local config = {
-  update_delay = 50,
-  window_title = "Neovim Context Info",
-  terminal_cmd = "alacritty",
-  auto_start = true,
+  -- Display settings
+  socket_path = "/tmp/nvim_context.sock",
+  update_delay = 150,     -- Debounce delay in milliseconds
+  window_title = "LSP Context",
+  
+  -- Kitty terminal settings
+  terminal_cmd = "kitty",
+  terminal_args = {
+    "--title=LSP Context",
+    "--override=font_size=11",
+    "--override=remember_window_size=no",
+    "--override=initial_window_width=80c",
+    "--override=initial_window_height=25c",
+    "--hold",
+    "-e", "python3"
+  },
+  
+  -- LSP feature toggles
   show_references_count = true,
   show_type_info = true,
   show_definition_location = true,
-  max_references_shown = 5,
-  excluded_filetypes = { "markdown", "text", "help" },
+  max_references_shown = 8,
+  max_hover_lines = 8,
+  
+  -- Cursor tracking settings
+  excluded_filetypes = { "help", "qf", "netrw", "fugitive" },
+  min_cursor_movement = 3,  -- Minimum column movement to trigger update
+  
+  -- Auto-start settings
+  auto_start = true,
+  auto_restart_on_error = true,
 }
 
-local last_position = { 0, 0 }
-local update_timer = nil
+-- State tracking
+local state = {
+  last_position = { 0, 0 },
+  update_timer = nil,
+  display_process = nil,
+  socket_connected = false,
+  plugin_enabled = true,
+}
 
--- Helper function to check if LSP is available
+-- Helper function to check if LSP clients are available
 local function has_lsp_clients()
-  local clients = vim.lsp.get_active_clients({ bufnr = 0 })
+  local clients = vim.lsp.get_clients({ bufnr = 0 })
   return #clients > 0
 end
 
--- Check if we should skip updating for this filetype
+-- Check if current filetype should be excluded
 local function should_skip_update()
   local filetype = vim.bo.filetype
   for _, excluded in ipairs(config.excluded_filetypes) do
@@ -34,187 +65,254 @@ local function should_skip_update()
   return false
 end
 
--- Check if cursor position changed significantly
-local function position_changed()
+-- Check if cursor moved significantly
+local function cursor_moved_significantly()
   local cursor = vim.api.nvim_win_get_cursor(0)
-  local changed = cursor[1] ~= last_position[1] or math.abs(cursor[2] - last_position[2]) >= 3
+  local moved = cursor[1] ~= state.last_position[1] or 
+                math.abs(cursor[2] - state.last_position[2]) >= config.min_cursor_movement
   
-  if changed then
-    last_position = cursor
+  if moved then
+    state.last_position = cursor
   end
   
-  return changed
+  return moved
 end
 
--- Trim empty lines from array
-local function trim_empty_lines(lines)
-  local trimmed = {}
-  for _, line in ipairs(lines) do
-    if line and line:match("%S") then
-      table.insert(trimmed, line)
-    end
-  end
-  return trimmed
-end
-
--- Get comprehensive information about symbol under cursor
-local function gather_symbol_info(callback)
-  local params = vim.lsp.util.make_position_params()
-  local results = {
-    current_file = vim.fn.expand('%:~:.'),
-    cursor_line = vim.fn.line('.'),
-    cursor_col = vim.fn.col('.'),
-  }
-  local pending_requests = 0
-  
-  local function check_completion()
-    pending_requests = pending_requests - 1
-    if pending_requests == 0 then
-      callback(results)
-    end
-  end
-
-  -- Get hover information
-  pending_requests = pending_requests + 1
-  vim.lsp.buf_request(0, 'textDocument/hover', params, function(err, result)
-    if not err and result and result.contents then
-      local hover_lines = vim.lsp.util.convert_input_to_markdown_lines(result.contents)
-      results.hover = trim_empty_lines(hover_lines)
-    end
-    check_completion()
-  end)
-
-  -- Get references
-  if config.show_references_count then
-    pending_requests = pending_requests + 1
-    vim.lsp.buf_request(0, 'textDocument/references', vim.tbl_extend('force', params, {
-      context = { includeDeclaration = true }
-    }), function(err, result)
-      if not err and result then
-        results.references_count = #result
-        results.references = {}
-        for i, ref in ipairs(result) do
-          if i <= config.max_references_shown and ref.uri then
-            local file_path = vim.uri_to_fname(ref.uri)
-            local relative_path = vim.fn.fnamemodify(file_path, ':~:.')
-            table.insert(results.references, relative_path .. ":" .. (ref.range.start.line + 1))
-          end
-        end
-        if #result > config.max_references_shown then
-          table.insert(results.references, "... and " .. (#result - config.max_references_shown) .. " more")
-        end
-      end
-      check_completion()
-    end)
-  end
-
-  -- Get definition location
-  if config.show_definition_location then
-    pending_requests = pending_requests + 1
-    vim.lsp.buf_request(0, 'textDocument/definition', params, function(err, result)
-      if not err and result and #result > 0 then
-        local def = result[1]
-        if def.uri then
-          local file_path = vim.uri_to_fname(def.uri)
-          local relative_path = vim.fn.fnamemodify(file_path, ':~:.')
-          results.definition_location = {
-            file = relative_path,
-            line = def.range.start.line + 1,
-            character = def.range.start.character + 1
-          }
-        end
-      end
-      check_completion()
-    end)
-  end
-end
-
--- Update context information
+-- Update context information and send to display window
 local function update_context()
+  if not state.plugin_enabled then return end
   if not has_lsp_clients() then
-    ipc.send_data({error = "No LSP server active for this buffer"})
+    socket_client.send_error("No LSP server active for this buffer")
     return
   end
-
-  if not position_changed() then
-    return
-  end
-
-  gather_symbol_info(function(info)
-    ipc.send_data(info)
-  end)
+  
+  if should_skip_update() then return end
+  if not cursor_moved_significantly() then return end
+  
+  -- Collect LSP information
+  lsp_collector.gather_context_info(function(context_data)
+    if context_data then
+      socket_client.send_context_update(context_data)
+    end
+  end, config)
 end
 
 -- Debounced update function
 local function debounced_update()
-  if update_timer then
-    vim.fn.timer_stop(update_timer)
+  if state.update_timer then
+    vim.fn.timer_stop(state.update_timer)
   end
   
-  update_timer = vim.fn.timer_start(config.update_delay, function()
+  state.update_timer = vim.fn.timer_start(config.update_delay, function()
     update_context()
-    update_timer = nil
+    state.update_timer = nil
   end)
 end
 
--- Setup autocmds for cursor tracking
-local function setup_cursor_tracking()
-  local group = vim.api.nvim_create_augroup("HoverFloatCursor", { clear = true })
+-- Start the display process
+local function start_display_process()
+  if state.display_process then
+    print("Display process already running")
+    return true
+  end
   
+  -- Create the display script path
+  local script_path = debug.getinfo(1).source:match("@?(.*/)")
+  local display_script = script_path .. "../../scripts/context_display.py"
+  
+  -- Build command arguments
+  local cmd_args = vim.deepcopy(config.terminal_args)
+  table.insert(cmd_args, display_script)
+  table.insert(cmd_args, config.socket_path)
+  
+  -- Start the terminal with display script
+  local handle = vim.fn.jobstart(
+    { config.terminal_cmd, unpack(cmd_args) },
+    {
+      detach = true,
+      on_exit = function(job_id, exit_code, event)
+        state.display_process = nil
+        state.socket_connected = false
+        
+        if exit_code ~= 0 and config.auto_restart_on_error then
+          print("Display process exited unexpectedly, restarting...")
+          vim.defer_fn(start_display_process, 1000)
+        end
+      end
+    }
+  )
+  
+  if handle > 0 then
+    state.display_process = handle
+    print("Context display window started")
+    
+    -- Wait a moment for the display to initialize, then connect socket
+    vim.defer_fn(function()
+      socket_client.connect(config.socket_path)
+      -- Send initial update
+      vim.defer_fn(debounced_update, 500)
+    end, 1000)
+    
+    return true
+  else
+    print("Failed to start display process")
+    return false
+  end
+end
+
+-- Stop the display process
+local function stop_display_process()
+  socket_client.disconnect()
+  
+  if state.display_process then
+    vim.fn.jobstop(state.display_process)
+    state.display_process = nil
+    state.socket_connected = false
+    print("Context display window closed")
+  end
+end
+
+-- Setup autocmds for cursor tracking
+local function setup_autocmds()
+  local group = vim.api.nvim_create_augroup("HoverFloatContext", { clear = true })
+  
+  -- Track cursor movement
   vim.api.nvim_create_autocmd({"CursorMoved", "CursorMovedI"}, {
     group = group,
     callback = function()
-      if should_skip_update() then
-        return
-      end
+      if not state.plugin_enabled then return end
       debounced_update()
     end,
   })
   
+  -- Update on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
     group = group,
     callback = function()
+      if not state.plugin_enabled then return end
       if has_lsp_clients() then
         vim.defer_fn(debounced_update, 100)
       end
     end,
   })
+  
+  -- Handle LSP attach/detach
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = group,
+    callback = function()
+      if not state.plugin_enabled then return end
+      vim.defer_fn(debounced_update, 200)
+    end,
+  })
+  
+  -- Cleanup on exit
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function()
+      stop_display_process()
+    end,
+  })
 end
 
--- Setup commands and keymaps
+-- Setup user commands
 local function setup_commands()
   vim.api.nvim_create_user_command("ContextWindowOpen", function()
-    ipc.start_display(config)
-  end, { desc = "Open separate context window" })
+    start_display_process()
+  end, { desc = "Open LSP context display window" })
   
   vim.api.nvim_create_user_command("ContextWindowClose", function()
-    ipc.stop_display()
-  end, { desc = "Close separate context window" })
+    stop_display_process()
+  end, { desc = "Close LSP context display window" })
   
-  vim.keymap.set('n', '<leader>co', ':ContextWindowOpen<CR>', { desc = 'Open Context Window', silent = true })
-  vim.keymap.set('n', '<leader>cc', ':ContextWindowClose<CR>', { desc = 'Close Context Window', silent = true })
+  vim.api.nvim_create_user_command("ContextWindowToggle", function()
+    if state.display_process then
+      stop_display_process()
+    else
+      start_display_process()
+    end
+  end, { desc = "Toggle LSP context display window" })
+  
+  vim.api.nvim_create_user_command("ContextWindowRestart", function()
+    stop_display_process()
+    vim.defer_fn(start_display_process, 500)
+  end, { desc = "Restart LSP context display window" })
+  
+  vim.api.nvim_create_user_command("ContextWindowEnable", function()
+    state.plugin_enabled = true
+    print("Context window plugin enabled")
+  end, { desc = "Enable context window updates" })
+  
+  vim.api.nvim_create_user_command("ContextWindowDisable", function()
+    state.plugin_enabled = false
+    print("Context window plugin disabled")
+  end, { desc = "Disable context window updates" })
+end
+
+-- Setup keymaps
+local function setup_keymaps()
+  vim.keymap.set('n', '<leader>co', ':ContextWindowOpen<CR>', 
+    { desc = 'Open Context Window', silent = true })
+  vim.keymap.set('n', '<leader>cc', ':ContextWindowClose<CR>', 
+    { desc = 'Close Context Window', silent = true })
+  vim.keymap.set('n', '<leader>ct', ':ContextWindowToggle<CR>', 
+    { desc = 'Toggle Context Window', silent = true })
+  vim.keymap.set('n', '<leader>cr', ':ContextWindowRestart<CR>', 
+    { desc = 'Restart Context Window', silent = true })
 end
 
 -- Main setup function
 function M.setup(opts)
-  -- Merge user config with defaults
+  -- Merge user configuration
   config = vim.tbl_deep_extend("force", config, opts or {})
   
-  -- Initialize IPC module
-  ipc.setup()
+  -- Initialize socket client
+  socket_client.setup(config)
   
-  -- Setup cursor tracking
-  setup_cursor_tracking()
-  
-  -- Setup commands and keymaps
+  -- Setup plugin components
+  setup_autocmds()
   setup_commands()
+  setup_keymaps()
   
   -- Auto-start if configured
   if config.auto_start then
     vim.defer_fn(function()
-      ipc.start_display(config)
-    end, 500)
+      start_display_process()
+    end, 1000)  -- Give Neovim time to fully load
   end
+  
+  print("LSP Context Window plugin loaded")
+end
+
+-- Public API
+M.start = start_display_process
+M.stop = stop_display_process
+M.toggle = function()
+  if state.display_process then
+    stop_display_process()
+  else
+    start_display_process()
+  end
+end
+
+M.enable = function()
+  state.plugin_enabled = true
+end
+
+M.disable = function()
+  state.plugin_enabled = false
+end
+
+M.is_running = function()
+  return state.display_process ~= nil
+end
+
+M.get_status = function()
+  return {
+    enabled = state.plugin_enabled,
+    running = state.display_process ~= nil,
+    connected = state.socket_connected,
+    last_position = state.last_position,
+  }
 end
 
 return M
