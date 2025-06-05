@@ -20,7 +20,7 @@ local default_config = {
     socket_path = "/tmp/nvim_context.sock",
     timeout = 5000,
     retry_attempts = 3,
-    update_delay = 150, -- Debounce delay in milliseconds
+    update_delay = 50, -- Debounce delay in milliseconds (reduced due to smart content filtering)
   },
 
   -- LSP feature toggles
@@ -36,7 +36,6 @@ local default_config = {
   -- Cursor tracking settings
   tracking = {
     excluded_filetypes = { "help", "qf", "netrw", "fugitive", "TelescopePrompt" },
-    min_cursor_movement = 3, -- Minimum column movement to trigger update
   },
 
   -- Auto-start settings
@@ -53,6 +52,9 @@ local state = {
   socket_connected = false,
   plugin_enabled = true,
   binary_path = nil,
+  -- New content-based caching
+  last_context_hash = nil,
+  last_symbol_position = nil,
 }
 
 -- Helper function to find TUI binary
@@ -176,59 +178,91 @@ local function should_skip_update()
   return false
 end
 
--- Check if cursor moved significantly
-local function cursor_moved_significantly()
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  local moved = cursor[1] ~= state.last_position[1] or
-      math.abs(cursor[2] - state.last_position[2]) >= state.config.tracking.min_cursor_movement
-
-  if moved then
-    state.last_position = cursor
-  end
-
-  return moved
+-- Generate content hash for LSP context data (excluding timestamp)
+local function hash_context_data(context_data)
+  if not context_data then return nil end
+  
+  -- Create stable representation excluding volatile fields like timestamp
+  local stable_data = {
+    file = context_data.file,
+    line = context_data.line,
+    col = context_data.col,
+    hover = context_data.hover,
+    definition = context_data.definition,
+    references_count = context_data.references_count,
+    references = context_data.references,
+    references_more = context_data.references_more,
+    type_definition = context_data.type_definition,
+  }
+  
+  return vim.fn.sha256(vim.json.encode(stable_data))
 end
 
--- Update context information and send to display window
-local function update_context()
-  if not state.plugin_enabled then 
-    vim.notify("Debug: Plugin disabled", vim.log.levels.WARN)
-    return 
+-- Check if we should update context based on symbol and content changes
+local function should_update_context()
+  if not state.plugin_enabled then return false end
+  if not has_lsp_clients() then return false end
+  if should_skip_update() then return false end
+  
+  -- Quick check: get current symbol under cursor
+  local current_symbol = lsp_collector.get_symbol_at_cursor()
+  
+  -- If we can't get a symbol, always update (might be whitespace/special position)
+  if not current_symbol then
+    return true
   end
-  if not has_lsp_clients() then
-    vim.notify("Debug: No LSP clients", vim.log.levels.WARN)
-    socket_client.send_error("No LSP server active for this buffer")
+  
+  -- If we have a cached symbol position, compare
+  if state.last_symbol_position then
+    local same_word = current_symbol.word == state.last_symbol_position.word
+    local same_line = current_symbol.line == state.last_symbol_position.line
+    local similar_col = math.abs(current_symbol.col - state.last_symbol_position.col) <= 3
+    
+    -- If we're on the same symbol in roughly the same position, probably no update needed
+    if same_word and same_line and similar_col then
+      return false
+    end
+  end
+  
+  -- Symbol or position changed significantly, worth checking
+  return true
+end
+
+-- Smart content-based context update
+local function update_context()
+  -- Quick pre-check to avoid expensive LSP calls
+  if not should_update_context() then
     return
   end
 
-  if should_skip_update() then 
-    vim.notify("Debug: Skipped due to filetype: " .. vim.bo.filetype, vim.log.levels.WARN)
-    return 
-  end
-  if not cursor_moved_significantly() then 
-    vim.notify("Debug: Cursor didn't move significantly", vim.log.levels.WARN)
-    return 
-  end
-
-  vim.notify("Debug: Collecting LSP data...", vim.log.levels.INFO)
-  -- Collect LSP information
+  -- Collect full LSP context information
   lsp_collector.gather_context_info(function(context_data)
-    if context_data then
-      vim.notify("Debug: Sending LSP data to socket", vim.log.levels.INFO)
+    if not context_data then
+      return
+    end
+    
+    -- Generate hash of the new context data
+    local new_hash = hash_context_data(context_data)
+    
+    -- Compare with cached hash - only send if content actually changed
+    if new_hash ~= state.last_context_hash then
+      -- Content changed meaningfully, send update
+      state.last_context_hash = new_hash
+      state.last_symbol_position = lsp_collector.get_symbol_at_cursor()
       socket_client.send_context_update(context_data)
-    else
-      vim.notify("Debug: No LSP data received", vim.log.levels.WARN)
     end
   end, state.config.features)
 end
 
--- Debounced update function
+-- Debounced update function (much shorter delay since we now do smart content filtering)
 local function debounced_update()
   if state.update_timer then
     vim.fn.timer_stop(state.update_timer)
   end
 
-  state.update_timer = vim.fn.timer_start(state.config.communication.update_delay, function()
+  -- Use shorter delay (50ms) since we now have intelligent content filtering
+  local delay = math.min(state.config.communication.update_delay, 50)
+  state.update_timer = vim.fn.timer_start(delay, function()
     update_context()
     state.update_timer = nil
   end)
@@ -377,6 +411,11 @@ local function setup_commands()
     elseif action == 'debug' then
       -- Force trigger LSP collection for debugging
       vim.notify("Debug: Forcing LSP data collection...", vim.log.levels.INFO)
+      vim.notify("Debug: Last hash: " .. (state.last_context_hash or "none"), vim.log.levels.INFO)
+      vim.notify("Debug: Last symbol: " .. vim.inspect(state.last_symbol_position), vim.log.levels.INFO)
+      -- Force update by clearing cache
+      state.last_context_hash = nil
+      state.last_symbol_position = nil
       update_context()
     else
       vim.notify('Usage: ContextWindow [open|close|toggle|restart|status|health|debug]', vim.log.levels.INFO)
@@ -477,6 +516,10 @@ M.get_status = function()
     last_position = state.last_position,
     binary_path = state.binary_path,
     config = state.config,
+    -- New content-based cache status
+    last_context_hash = state.last_context_hash,
+    last_symbol_position = state.last_symbol_position,
+    lsp_cache_stats = lsp_collector.get_cache_stats(),
   }
 end
 
@@ -492,6 +535,14 @@ M.set_binary_path = function(path)
     vim.notify("Binary not executable: " .. path, vim.log.levels.ERROR)
     return false
   end
+end
+
+-- Clear content cache (useful for debugging or forcing updates)
+M.clear_content_cache = function()
+  state.last_context_hash = nil
+  state.last_symbol_position = nil
+  lsp_collector.clear_cache()
+  vim.notify("Content cache cleared", vim.log.levels.INFO)
 end
 
 return M
