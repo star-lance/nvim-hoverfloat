@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
@@ -342,6 +343,18 @@ func formatHoverContent(hover []string, width int, s *styles.Styles) string {
 		return s.Comment.Render("No documentation available")
 	}
 
+	// Check if content appears to be markdown
+	if isMarkdownContent(hover) {
+		// Join all lines and render as markdown
+		content := strings.Join(hover, "\n")
+		rendered, err := renderMarkdown(content, width-4, true) // Use dark theme
+		if err == nil {
+			return rendered
+		}
+		// Fall back to simple rendering if markdown parsing fails
+	}
+
+	// Simple text rendering with basic syntax highlighting
 	var lines []string
 	for _, line := range hover {
 		// Simple syntax highlighting for code blocks
@@ -514,3 +527,71 @@ func padContentToWidth(content string, width int) string {
 	
 	return strings.Join(paddedLines, "\n")
 }
+
+// isMarkdownContent detects if content contains markdown formatting
+func isMarkdownContent(content []string) bool {
+	markdownIndicators := 0
+	totalLines := len(content)
+	
+	for _, line := range content {
+		trimmed := strings.TrimSpace(line)
+		
+		// Strong indicators (likely markdown)
+		if strings.Contains(line, "```") ||
+		   strings.HasPrefix(trimmed, "# ") ||
+		   strings.HasPrefix(trimmed, "## ") ||
+		   strings.HasPrefix(trimmed, "### ") ||
+		   strings.Contains(line, "**") ||
+		   strings.Contains(line, "__") ||
+		   strings.HasPrefix(trimmed, "- ") ||
+		   strings.HasPrefix(trimmed, "* ") ||
+		   strings.HasPrefix(trimmed, "+ ") ||
+		   strings.HasPrefix(trimmed, "> ") {
+			markdownIndicators++
+		}
+		
+		// Weaker indicators (inline code, links)
+		if strings.Contains(line, "`") && !strings.Contains(line, "```") ||
+		   strings.Contains(line, "[") && strings.Contains(line, "]") ||
+		   strings.Contains(line, "_") {
+			markdownIndicators++
+		}
+	}
+	
+	// Consider it markdown if we have enough indicators
+	// For small content (< 3 lines), need at least 1 strong indicator
+	// For larger content, need indicators in at least 25% of lines
+	if totalLines <= 3 {
+		return markdownIndicators >= 1
+	}
+	
+	return float64(markdownIndicators) / float64(totalLines) >= 0.25
+}
+
+// renderMarkdown uses glamour to render markdown content with custom styling
+func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
+	// Use built-in styles that work well with dark terminals
+	var style string
+	if darkTheme {
+		style = "dark"
+	} else {
+		style = "light"
+	}
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle(style),
+		glamour.WithWordWrap(width),
+		glamour.WithEmoji(),
+	)
+	if err != nil {
+		return content, err
+	}
+
+	rendered, err := renderer.Render(content)
+	if err != nil {
+		return content, err
+	}
+
+	return strings.TrimSpace(rendered), nil
+}
+
