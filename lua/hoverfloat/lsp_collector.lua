@@ -73,6 +73,15 @@ local function format_file_path(uri)
   return file_path
 end
 
+-- Get position encoding from the first available LSP client
+local function get_position_encoding()
+  local clients = vim.lsp.get_clients({ bufnr = 0 })
+  if #clients > 0 then
+    return clients[1].offset_encoding or 'utf-16'
+  end
+  return 'utf-16'  -- Default fallback
+end
+
 -- Request hover information
 local function request_hover(params, callback, config)
   local bufnr = vim.api.nvim_get_current_buf()
@@ -230,7 +239,8 @@ end
 
 -- Main function to gather all context information
 function M.gather_context_info(completion_callback, config)
-  local params = vim.lsp.util.make_position_params()
+  local position_encoding = get_position_encoding()
+  local params = vim.lsp.util.make_position_params(0, position_encoding)
   
   -- Current file information
   local context_data = {
@@ -296,7 +306,8 @@ end
 
 -- Get symbol under cursor (simpler version for quick checks)
 function M.get_symbol_at_cursor()
-  local params = vim.lsp.util.make_position_params()
+  local position_encoding = get_position_encoding()
+  local params = vim.lsp.util.make_position_params(0, position_encoding)
   local bufnr = vim.api.nvim_get_current_buf()
   
   -- Get the word under cursor
