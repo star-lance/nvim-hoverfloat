@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/config"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
@@ -25,6 +26,12 @@ type ViewData struct {
 	ShowTypeInfo   bool
 	MenuVisible    bool
 	MenuSelection  int
+	
+	// Viewports for scrollable content
+	HoverViewport      *viewport.Model
+	ReferencesViewport *viewport.Model
+	DefinitionViewport *viewport.Model
+	TypeInfoViewport   *viewport.Model
 }
 
 // FocusArea constants (matching the model)
@@ -172,7 +179,7 @@ func renderContent(width, height int, data *ViewData, s *styles.Styles) string {
 
 // renderHoverSection creates the hover documentation section
 func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) string {
-	if data.Context == nil || !data.Context.HasHover() {
+	if data.Context == nil || !data.Context.HasHover() || data.HoverViewport == nil {
 		return ""
 	}
 
@@ -184,20 +191,27 @@ func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) str
 
 	// Header with full width background
 	headerText := "📖 Documentation"
+	if focused {
+		headerText += " (⬇️⬆️ scroll)"
+	}
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format hover content with consistent background
-	content := formatHoverContent(data.Context.Hover, width-4, s)
-
+	// Format hover content and set it in the viewport
+	content := formatHoverContent(data.Context.Hover, data.HoverViewport.Width, s)
+	data.HoverViewport.SetContent(content)
+	
+	// Get the viewport's view (handles scrolling)
+	viewportContent := data.HoverViewport.View()
+	
 	// Get background color from config
 	bgColor := config.Config.Colors.Background.Secondary
 	if focused {
 		bgColor = config.Config.Colors.Background.Selection
 	}
-
-	// Enforce consistent full-width background
-	contentFormatted := enforceConsistentBackground(content, width-4, bgColor)
+	
+	// Enforce consistent full-width background on viewport content
+	contentFormatted := enforceConsistentBackground(viewportContent, width-4, bgColor)
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
@@ -482,6 +496,7 @@ func renderFooter(width int, data *ViewData, s *styles.Styles) string {
 	bindings := []string{
 		s.Keybind.Render("?") + " menu",
 		s.Keybind.Render("hjkl") + " navigate",
+		s.Keybind.Render("ctrl+u/d") + " scroll",
 		s.Keybind.Render("enter") + " toggle",
 		s.Keybind.Render("q") + " quit",
 	}

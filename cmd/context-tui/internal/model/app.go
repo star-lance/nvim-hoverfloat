@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/view"
@@ -51,6 +52,12 @@ type App struct {
 	socketListener net.Listener
 	connected      bool
 
+	// Viewports for scrollable sections
+	hoverViewport      viewport.Model
+	referencesViewport viewport.Model
+	definitionViewport viewport.Model
+	typeInfoViewport   viewport.Model
+
 	// Styles
 	styles *styles.Styles
 }
@@ -72,13 +79,17 @@ type Context struct {
 // NewApp creates a new application model
 func NewApp(socketPath string) *App {
 	return &App{
-		socketPath:     socketPath,
-		ShowHover:      true,
-		ShowReferences: true,
-		ShowDefinition: true,
-		ShowTypeInfo:   true,
-		Focus:          FocusHover,
-		styles:         styles.New(),
+		socketPath:         socketPath,
+		ShowHover:          true,
+		ShowReferences:     true,
+		ShowDefinition:     true,
+		ShowTypeInfo:       true,
+		Focus:              FocusHover,
+		styles:             styles.New(),
+		hoverViewport:      viewport.New(80, 10),
+		referencesViewport: viewport.New(80, 10),
+		definitionViewport: viewport.New(80, 5),
+		typeInfoViewport:   viewport.New(80, 5),
 	}
 }
 
@@ -97,6 +108,9 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 		m.Ready = true
+		
+		// Update viewport dimensions based on available space
+		m.updateViewportSizes()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -163,6 +177,10 @@ func (m *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.navigateRight(), nil
 	case "enter", " ":
 		return m.toggleCurrentField(), nil
+	case "ctrl+d", "pgdn":
+		return m.scrollCurrentViewportDown(), nil
+	case "ctrl+u", "pgup":
+		return m.scrollCurrentViewportUp(), nil
 	case "H":
 		m.ShowHover = !m.ShowHover
 		return m, nil
@@ -242,6 +260,103 @@ func (m *App) findCurrentIndex(areas []FocusArea) int {
 	return 0
 }
 
+// updateViewportSizes calculates and sets viewport dimensions based on terminal size
+func (m *App) updateViewportSizes() {
+	if m.Width == 0 || m.Height == 0 {
+		return
+	}
+	
+	// Calculate available space for content (minus header and footer)
+	headerHeight := 3
+	footerHeight := 3
+	contentHeight := m.Height - headerHeight - footerHeight
+	
+	// Divide content area among visible sections
+	visibleSections := 0
+	if m.ShowHover {
+		visibleSections++
+	}
+	if m.ShowReferences {
+		visibleSections++
+	}
+	if m.ShowDefinition {
+		visibleSections++
+	}
+	if m.ShowTypeInfo {
+		visibleSections++
+	}
+	
+	if visibleSections == 0 {
+		return
+	}
+	
+	// Calculate section height (with minimum of 5 lines)
+	sectionHeight := max(5, contentHeight/visibleSections)
+	width := m.Width - 4 // Account for padding
+	
+	// Update each viewport
+	m.hoverViewport.Width = width
+	m.hoverViewport.Height = sectionHeight
+	m.referencesViewport.Width = width
+	m.referencesViewport.Height = sectionHeight
+	m.definitionViewport.Width = width
+	m.definitionViewport.Height = max(3, sectionHeight/2) // Smaller for simple location info
+	m.typeInfoViewport.Width = width
+	m.typeInfoViewport.Height = max(3, sectionHeight/2) // Smaller for simple location info
+}
+
+// scrollCurrentViewportDown scrolls the currently focused viewport down
+func (m *App) scrollCurrentViewportDown() *App {
+	switch m.Focus {
+	case FocusHover:
+		m.hoverViewport.LineDown(3)
+	case FocusReferences:
+		m.referencesViewport.LineDown(3)
+	case FocusDefinition:
+		m.definitionViewport.LineDown(1)
+	case FocusTypeDefinition:
+		m.typeInfoViewport.LineDown(1)
+	}
+	return m
+}
+
+// scrollCurrentViewportUp scrolls the currently focused viewport up
+func (m *App) scrollCurrentViewportUp() *App {
+	switch m.Focus {
+	case FocusHover:
+		m.hoverViewport.LineUp(3)
+	case FocusReferences:
+		m.referencesViewport.LineUp(3)
+	case FocusDefinition:
+		m.definitionViewport.LineUp(1)
+	case FocusTypeDefinition:
+		m.typeInfoViewport.LineUp(1)
+	}
+	return m
+}
+
+// getCurrentViewport returns the currently focused viewport
+func (m *App) getCurrentViewport() *viewport.Model {
+	switch m.Focus {
+	case FocusHover:
+		return &m.hoverViewport
+	case FocusReferences:
+		return &m.referencesViewport
+	case FocusDefinition:
+		return &m.definitionViewport
+	case FocusTypeDefinition:
+		return &m.typeInfoViewport
+	}
+	return &m.hoverViewport
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // toggleCurrentField toggles the currently focused field
 func (m *App) toggleCurrentField() *App {
 	switch m.Focus {
@@ -296,17 +411,21 @@ func (m *App) View() string {
 	}
 
 	content := view.Render(m.Width, m.Height, &view.ViewData{
-		Context:        contextData,
-		ErrorMsg:       m.ErrorMsg,
-		Connected:      m.connected,
-		LastUpdate:     m.LastUpdate,
-		Focus:          int(m.Focus),
-		ShowHover:      m.ShowHover,
-		ShowReferences: m.ShowReferences,
-		ShowDefinition: m.ShowDefinition,
-		ShowTypeInfo:   m.ShowTypeInfo,
-		MenuVisible:    m.MenuVisible,
-		MenuSelection:  m.MenuSelection,
+		Context:            contextData,
+		ErrorMsg:           m.ErrorMsg,
+		Connected:          m.connected,
+		LastUpdate:         m.LastUpdate,
+		Focus:              int(m.Focus),
+		ShowHover:          m.ShowHover,
+		ShowReferences:     m.ShowReferences,
+		ShowDefinition:     m.ShowDefinition,
+		ShowTypeInfo:       m.ShowTypeInfo,
+		MenuVisible:        m.MenuVisible,
+		MenuSelection:      m.MenuSelection,
+		HoverViewport:      &m.hoverViewport,
+		ReferencesViewport: &m.referencesViewport,
+		DefinitionViewport: &m.definitionViewport,
+		TypeInfoViewport:   &m.typeInfoViewport,
 	}, m.styles)
 
 	return content

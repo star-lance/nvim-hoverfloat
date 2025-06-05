@@ -186,8 +186,6 @@ local function hash_context_data(context_data)
   -- Create stable representation excluding volatile fields like timestamp
   local stable_data = {
     file = context_data.file,
-    line = context_data.line,
-    col = context_data.col,
     hover = context_data.hover,
     definition = context_data.definition,
     references_count = context_data.references_count,
