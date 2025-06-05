@@ -71,7 +71,7 @@ func Render(width, height int, data *ViewData, s *styles.Styles) string {
 func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 	// Header line with status
 	title := "🔍 NEOVIM LSP CONTEXT"
-	
+
 	var status string
 	if data.Connected {
 		status = s.StatusGood.Render("● Connected")
@@ -93,9 +93,9 @@ func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 		spacingNeeded = 0
 	}
 
-	headerLine1 := fmt.Sprintf("%s%s%s", 
-		title, 
-		strings.Repeat(" ", spacingNeeded), 
+	headerLine1 := fmt.Sprintf("%s%s%s",
+		title,
+		strings.Repeat(" ", spacingNeeded),
 		statusAndTime)
 
 	// File info line
@@ -189,19 +189,19 @@ func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) str
 
 	// Format hover content with consistent background
 	content := formatHoverContent(data.Context.Hover, width-4, s)
-	
+
 	// Get background color from config
 	bgColor := config.Config.Colors.Background.Secondary
 	if focused {
 		bgColor = config.Config.Colors.Background.Selection
 	}
-	
+
 	// Enforce consistent full-width background
 	contentFormatted := enforceConsistentBackground(content, width-4, bgColor)
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-	
+
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
@@ -229,19 +229,19 @@ func renderReferencesSection(width, height int, data *ViewData, s *styles.Styles
 
 	// Format references list with consistent background
 	content := formatReferences(data.Context, width-4, s)
-	
+
 	// Get background color from config
 	bgColor := config.Config.Colors.Background.Secondary
 	if focused {
 		bgColor = config.Config.Colors.Background.Selection
 	}
-	
+
 	// Enforce consistent full-width background
 	contentFormatted := enforceConsistentBackground(content, width-4, bgColor)
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-	
+
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
@@ -269,19 +269,19 @@ func renderDefinitionSection(width, height int, data *ViewData, s *styles.Styles
 		def.Line,
 		def.Col,
 	)
-	
+
 	// Get background color from config
 	bgColor := config.Config.Colors.Background.Secondary
 	if focused {
 		bgColor = config.Config.Colors.Background.Selection
 	}
-	
+
 	// Enforce consistent full-width background
 	contentFormatted := enforceConsistentBackground(location, width-4, bgColor)
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-	
+
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
@@ -309,19 +309,19 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 		typedef.Line,
 		typedef.Col,
 	)
-	
+
 	// Get background color from config
 	bgColor := config.Config.Colors.Background.Secondary
 	if focused {
 		bgColor = config.Config.Colors.Background.Selection
 	}
-	
+
 	// Enforce consistent full-width background
 	contentFormatted := enforceConsistentBackground(location, width-4, bgColor)
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-	
+
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
@@ -481,13 +481,13 @@ func renderFooter(width int, data *ViewData, s *styles.Styles) string {
 	// Key bindings help
 	bindings := []string{
 		s.Keybind.Render("?") + " menu",
-		s.Keybind.Render("hjkl") + " navigate", 
+		s.Keybind.Render("hjkl") + " navigate",
 		s.Keybind.Render("enter") + " toggle",
 		s.Keybind.Render("q") + " quit",
 	}
 
 	help := strings.Join(bindings, "  ")
-	
+
 	// Pad to full width
 	helpPadded := help + strings.Repeat(" ", max(0, width-lipgloss.Width(help)-4))
 
@@ -549,15 +549,15 @@ func enforceConsistentBackground(content string, width int, bgColor string) stri
 	if config.Config == nil || !config.Config.Formatting.Sections.ConsistentBackgrounds {
 		return content
 	}
-	
+
 	lines := strings.Split(content, "\n")
 	var processedLines []string
-	
+
 	// Background style for consistent formatting
 	bgStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color(bgColor)).
 		Width(width)
-	
+
 	for _, line := range lines {
 		// Strip any existing styling that might interfere
 		cleanLine := stripANSI(line)
@@ -565,7 +565,7 @@ func enforceConsistentBackground(content string, width int, bgColor string) stri
 		styledLine := bgStyle.Render(cleanLine)
 		processedLines = append(processedLines, styledLine)
 	}
-	
+
 	return strings.Join(processedLines, "\n")
 }
 
@@ -592,40 +592,40 @@ func stripANSI(s string) string {
 func isMarkdownContent(content []string) bool {
 	markdownIndicators := 0
 	totalLines := len(content)
-	
+
 	for _, line := range content {
 		trimmed := strings.TrimSpace(line)
-		
+
 		// Strong indicators (likely markdown)
 		if strings.Contains(line, "```") ||
-		   strings.HasPrefix(trimmed, "# ") ||
-		   strings.HasPrefix(trimmed, "## ") ||
-		   strings.HasPrefix(trimmed, "### ") ||
-		   strings.Contains(line, "**") ||
-		   strings.Contains(line, "__") ||
-		   strings.HasPrefix(trimmed, "- ") ||
-		   strings.HasPrefix(trimmed, "* ") ||
-		   strings.HasPrefix(trimmed, "+ ") ||
-		   strings.HasPrefix(trimmed, "> ") {
+			strings.HasPrefix(trimmed, "# ") ||
+			strings.HasPrefix(trimmed, "## ") ||
+			strings.HasPrefix(trimmed, "### ") ||
+			strings.Contains(line, "**") ||
+			strings.Contains(line, "__") ||
+			strings.HasPrefix(trimmed, "- ") ||
+			strings.HasPrefix(trimmed, "* ") ||
+			strings.HasPrefix(trimmed, "+ ") ||
+			strings.HasPrefix(trimmed, "> ") {
 			markdownIndicators++
 		}
-		
+
 		// Weaker indicators (inline code, links)
 		if strings.Contains(line, "`") && !strings.Contains(line, "```") ||
-		   strings.Contains(line, "[") && strings.Contains(line, "]") ||
-		   strings.Contains(line, "_") {
+			strings.Contains(line, "[") && strings.Contains(line, "]") ||
+			strings.Contains(line, "_") {
 			markdownIndicators++
 		}
 	}
-	
+
 	// Consider it markdown if we have enough indicators
 	// For small content (< 3 lines), need at least 1 strong indicator
 	// For larger content, need indicators in at least 25% of lines
 	if totalLines <= 3 {
 		return markdownIndicators >= 1
 	}
-	
-	return float64(markdownIndicators) / float64(totalLines) >= 0.25
+
+	return float64(markdownIndicators)/float64(totalLines) >= 0.25
 }
 
 // renderMarkdown uses glamour to render markdown content with centralized styling
@@ -634,7 +634,7 @@ func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
 	if config.Config == nil || !config.Config.Markdown.UseGlamour {
 		return content, nil
 	}
-	
+
 	// Use configured theme
 	style := config.Config.Markdown.Theme
 	if style == "" {
@@ -643,11 +643,11 @@ func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
 
 	var options []glamour.TermRendererOption
 	options = append(options, glamour.WithStandardStyle(style))
-	
+
 	if config.Config.Markdown.WordWrap {
 		options = append(options, glamour.WithWordWrap(width))
 	}
-	
+
 	options = append(options, glamour.WithEmoji())
 
 	renderer, err := glamour.NewTermRenderer(options...)
@@ -662,4 +662,3 @@ func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
 
 	return strings.TrimSpace(rendered), nil
 }
-
