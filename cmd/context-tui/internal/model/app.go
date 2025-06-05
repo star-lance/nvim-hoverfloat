@@ -106,13 +106,13 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Context = (*Context)(msg.Data)
 		m.LastUpdate = time.Now()
 		m.ErrorMsg = ""
-		// Continue listening for more messages
-		return m, m.listenForMessages()
+		// Continue listening for more messages and force a redraw
+		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
 
 	case socket.ErrorMsg:
 		m.ErrorMsg = string(msg)
-		// Continue listening for more messages
-		return m, m.listenForMessages()
+		// Continue listening for more messages and force a redraw
+		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
 
 	case socket.ConnectionMsg:
 		m.connected = bool(msg)
@@ -341,18 +341,18 @@ func (m *App) listenForMessages() tea.Cmd {
 			return socket.ErrorMsg("Socket connection failed")
 		}
 
-		// Handle this connection and return the first message
+		// Handle ONE message per connection, then close
 		decoder := json.NewDecoder(conn)
 		var msg socket.Message
 		if err := decoder.Decode(&msg); err != nil {
 			conn.Close()
 			return socket.ErrorMsg("Failed to decode message")
 		}
+		
+		// Close connection after reading one message
+		conn.Close()
 
-		// Start a goroutine to handle remaining messages from this connection
-		go m.handleRemainingMessages(conn, decoder)
-
-		// Return the first message to the main program
+		// Return the message to the main program
 		if msg.Type == "context_update" {
 			return socket.ContextUpdateMsg{Data: (*socket.ContextData)(&msg.Data)}
 		}
@@ -361,24 +361,4 @@ func (m *App) listenForMessages() tea.Cmd {
 	}
 }
 
-// handleRemainingMessages processes subsequent messages from a connection
-func (m *App) handleRemainingMessages(conn net.Conn, decoder *json.Decoder) {
-	defer conn.Close()
-	
-	for {
-		var msg socket.Message
-		if err := decoder.Decode(&msg); err != nil {
-			return // Connection closed or invalid data
-		}
-
-		// For remaining messages, we need to send them through a different mechanism
-		// Since we can't easily send to the main program from here, we'll use a channel
-		if msg.Type == "context_update" {
-			// Store in the app instance for the next update cycle to pick up
-			m.Context = (*Context)(&msg.Data)
-			m.LastUpdate = time.Now()
-			m.ErrorMsg = ""
-		}
-	}
-}
 

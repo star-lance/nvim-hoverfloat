@@ -191,19 +191,33 @@ end
 
 -- Update context information and send to display window
 local function update_context()
-  if not state.plugin_enabled then return end
+  if not state.plugin_enabled then 
+    vim.notify("Debug: Plugin disabled", vim.log.levels.WARN)
+    return 
+  end
   if not has_lsp_clients() then
+    vim.notify("Debug: No LSP clients", vim.log.levels.WARN)
     socket_client.send_error("No LSP server active for this buffer")
     return
   end
 
-  if should_skip_update() then return end
-  if not cursor_moved_significantly() then return end
+  if should_skip_update() then 
+    vim.notify("Debug: Skipped due to filetype: " .. vim.bo.filetype, vim.log.levels.WARN)
+    return 
+  end
+  if not cursor_moved_significantly() then 
+    vim.notify("Debug: Cursor didn't move significantly", vim.log.levels.WARN)
+    return 
+  end
 
+  vim.notify("Debug: Collecting LSP data...", vim.log.levels.INFO)
   -- Collect LSP information
   lsp_collector.gather_context_info(function(context_data)
     if context_data then
+      vim.notify("Debug: Sending LSP data to socket", vim.log.levels.INFO)
       socket_client.send_context_update(context_data)
+    else
+      vim.notify("Debug: No LSP data received", vim.log.levels.WARN)
     end
   end, state.config.features)
 end
@@ -360,13 +374,17 @@ local function setup_commands()
       print(vim.inspect(M.get_status()))
     elseif action == 'health' then
       M.health()
+    elseif action == 'debug' then
+      -- Force trigger LSP collection for debugging
+      vim.notify("Debug: Forcing LSP data collection...", vim.log.levels.INFO)
+      update_context()
     else
-      vim.notify('Usage: ContextWindow [open|close|toggle|restart|status|health]', vim.log.levels.INFO)
+      vim.notify('Usage: ContextWindow [open|close|toggle|restart|status|health|debug]', vim.log.levels.INFO)
     end
   end, {
     nargs = '?',
     complete = function()
-      return { 'open', 'close', 'toggle', 'restart', 'status', 'health' }
+      return { 'open', 'close', 'toggle', 'restart', 'status', 'health', 'debug' }
     end,
     desc = 'Manage LSP context window'
   })
