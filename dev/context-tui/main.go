@@ -286,15 +286,13 @@ func main() {
 		tea.WithAltScreen(),
 	)
 
-	// Store listener in model (hack for cleanup)
-	if model, ok := m.(model); ok {
-		defer func() {
-			if model.listener != nil {
-				model.listener.Close()
-			}
-			os.Remove(socketPath)
-		}()
-	}
+	// Store listener for cleanup
+	defer func() {
+		if m.listener != nil {
+			m.listener.Close()
+		}
+		os.Remove(socketPath)
+	}()
 
 	// Run
 	if _, err := p.Run(); err != nil {

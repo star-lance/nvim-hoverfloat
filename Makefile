@@ -10,7 +10,7 @@ DEV_BIN_DIR := dev/bin
 
 # Go build flags
 GO_BUILD_FLAGS := -ldflags="-s -w" -trimpath
-GO_VERSION := 1.21
+GO_VERSION := 1.23
 
 # Default target
 all: build
@@ -51,7 +51,7 @@ dev: dev-build
 # Run all tests
 test:
 	@echo "🧪 Running tests..."
-	@go test -v ./cmd/context-tui/...
+	@cd cmd/context-tui && go test -v ./...
 	@cd dev/mock-nvim-client && go test -v ./...
 	@echo "✅ All tests passed"
 
@@ -63,13 +63,14 @@ dev-test: dev-build
 # Lint Go code
 lint:
 	@echo "🔍 Linting Go code..."
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run ./cmd/context-tui/...; \
-		cd dev/mock-nvim-client && golangci-lint run .; \
+	@if command -v golangci-lint >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/golangci-lint" ]; then \
+		LINTER=$$(command -v golangci-lint || echo "$(HOME)/go/bin/golangci-lint"); \
+		(cd cmd/context-tui && $$LINTER run ./... || true); \
+		(cd dev/mock-nvim-client && $$LINTER run . || true); \
 	else \
 		echo "⚠️  golangci-lint not found, using go vet"; \
-		go vet ./cmd/context-tui/...; \
-		cd dev/mock-nvim-client && go vet .; \
+		(cd cmd/context-tui && go vet ./...); \
+		(cd dev/mock-nvim-client && go vet .); \
 	fi
 	@echo "✅ Linting complete"
 

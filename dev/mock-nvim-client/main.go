@@ -11,16 +11,16 @@ import (
 
 // ContextData represents the structure sent by the Neovim plugin
 type ContextData struct {
-	File             string                 `json:"file"`
-	Line             int                    `json:"line"`
-	Col              int                    `json:"col"`
-	Timestamp        int64                  `json:"timestamp"`
-	Hover            []string               `json:"hover,omitempty"`
-	Definition       *LocationInfo          `json:"definition,omitempty"`
-	ReferencesCount  int                    `json:"references_count,omitempty"`
-	References       []LocationInfo         `json:"references,omitempty"`
-	ReferencesMore   int                    `json:"references_more,omitempty"`
-	TypeDefinition   *LocationInfo          `json:"type_definition,omitempty"`
+	File            string         `json:"file"`
+	Line            int            `json:"line"`
+	Col             int            `json:"col"`
+	Timestamp       int64          `json:"timestamp"`
+	Hover           []string       `json:"hover,omitempty"`
+	Definition      *LocationInfo  `json:"definition,omitempty"`
+	ReferencesCount int            `json:"references_count,omitempty"`
+	References      []LocationInfo `json:"references,omitempty"`
+	ReferencesMore  int            `json:"references_more,omitempty"`
+	TypeDefinition  *LocationInfo  `json:"type_definition,omitempty"`
 }
 
 type LocationInfo struct {
@@ -326,13 +326,13 @@ func runInteractiveMode(config *Config) {
 			if choice >= 1 && choice <= len(config.Scenarios) {
 				scenario := config.Scenarios[choice-1]
 				fmt.Printf("📤 Sending scenario: %s\n", scenario.Name)
-				
+
 				if err := sendMessage(config.SocketPath, scenario.Data); err != nil {
 					fmt.Printf("❌ Error: %v\n", err)
 				} else {
 					fmt.Printf("✅ Sent successfully\n")
 				}
-				
+
 				if scenario.Delay > 0 {
 					time.Sleep(time.Duration(scenario.Delay) * time.Millisecond)
 				}
@@ -362,17 +362,17 @@ func runScenario(config *Config, scenarioName string) {
 
 func runContinuousMode(config *Config) {
 	fmt.Println("🔄 Running continuous mode (Ctrl+C to stop)")
-	
+
 	for {
 		for _, scenario := range config.Scenarios {
 			fmt.Printf("📤 Sending: %s\n", scenario.Name)
-			
+
 			if err := sendMessage(config.SocketPath, scenario.Data); err != nil {
 				log.Printf("❌ Error: %v", err)
 			} else {
 				fmt.Printf("✅ Sent: %s\n", scenario.Name)
 			}
-			
+
 			delay := scenario.Delay
 			if delay == 0 {
 				delay = 2000 // Default 2 second delay
@@ -386,14 +386,14 @@ func runSingleTest(config *Config) {
 	if len(config.Scenarios) == 0 {
 		log.Fatal("❌ No scenarios available")
 	}
-	
+
 	scenario := config.Scenarios[0]
 	fmt.Printf("📤 Sending single test: %s\n", scenario.Description)
-	
+
 	if err := sendMessage(config.SocketPath, scenario.Data); err != nil {
 		log.Fatalf("❌ Error: %v", err)
 	}
-	
+
 	fmt.Println("✅ Test completed")
 }
 

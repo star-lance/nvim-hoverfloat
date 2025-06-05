@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/view"
@@ -32,54 +31,54 @@ type App struct {
 	Ready  bool
 
 	// Content state
-	Context     *Context
-	LastUpdate  time.Time
-	ErrorMsg    string
-	
+	Context    *Context
+	LastUpdate time.Time
+	ErrorMsg   string
+
 	// Interactive state
-	Focus           FocusArea
-	ShowHover       bool
-	ShowReferences  bool
-	ShowDefinition  bool
-	ShowTypeInfo    bool
-	
+	Focus          FocusArea
+	ShowHover      bool
+	ShowReferences bool
+	ShowDefinition bool
+	ShowTypeInfo   bool
+
 	// Menu state
-	MenuVisible     bool
-	MenuSelection   int
-	
+	MenuVisible   bool
+	MenuSelection int
+
 	// Socket communication
-	socketPath      string
-	socketListener  net.Listener
-	connected       bool
-	
+	socketPath     string
+	socketListener net.Listener
+	connected      bool
+
 	// Styles
 	styles *styles.Styles
 }
 
 // Context represents LSP context data
 type Context struct {
-	File             string                `json:"file"`
-	Line             int                   `json:"line"`
-	Col              int                   `json:"col"`
-	Timestamp        int64                 `json:"timestamp"`
-	Hover            []string              `json:"hover,omitempty"`
-	Definition       *socket.LocationInfo  `json:"definition,omitempty"`
-	ReferencesCount  int                   `json:"references_count,omitempty"`
-	References       []socket.LocationInfo `json:"references,omitempty"`
-	ReferencesMore   int                   `json:"references_more,omitempty"`
-	TypeDefinition   *socket.LocationInfo  `json:"type_definition,omitempty"`
+	File            string                `json:"file"`
+	Line            int                   `json:"line"`
+	Col             int                   `json:"col"`
+	Timestamp       int64                 `json:"timestamp"`
+	Hover           []string              `json:"hover,omitempty"`
+	Definition      *socket.LocationInfo  `json:"definition,omitempty"`
+	ReferencesCount int                   `json:"references_count,omitempty"`
+	References      []socket.LocationInfo `json:"references,omitempty"`
+	ReferencesMore  int                   `json:"references_more,omitempty"`
+	TypeDefinition  *socket.LocationInfo  `json:"type_definition,omitempty"`
 }
 
 // NewApp creates a new application model
 func NewApp(socketPath string) *App {
 	return &App{
-		socketPath:      socketPath,
-		ShowHover:       true,
-		ShowReferences:  true,
-		ShowDefinition:  true,
-		ShowTypeInfo:    true,
-		Focus:           FocusHover,
-		styles:          styles.New(),
+		socketPath:     socketPath,
+		ShowHover:      true,
+		ShowReferences: true,
+		ShowDefinition: true,
+		ShowTypeInfo:   true,
+		Focus:          FocusHover,
+		styles:         styles.New(),
 	}
 }
 
@@ -186,7 +185,7 @@ func (m *App) navigateDown() *App {
 	if len(areas) == 0 {
 		return m
 	}
-	
+
 	current := m.findCurrentIndex(areas)
 	m.Focus = areas[(current+1)%len(areas)]
 	return m
@@ -197,7 +196,7 @@ func (m *App) navigateUp() *App {
 	if len(areas) == 0 {
 		return m
 	}
-	
+
 	current := m.findCurrentIndex(areas)
 	m.Focus = areas[(current-1+len(areas))%len(areas)]
 	return m
@@ -276,18 +275,34 @@ func (m *App) View() string {
 	}
 
 	// Create the main view
+	var contextData *socket.ContextData
+	if m.Context != nil {
+		contextData = &socket.ContextData{
+			File:            m.Context.File,
+			Line:            m.Context.Line,
+			Col:             m.Context.Col,
+			Timestamp:       m.Context.Timestamp,
+			Hover:           m.Context.Hover,
+			Definition:      m.Context.Definition,
+			ReferencesCount: m.Context.ReferencesCount,
+			References:      m.Context.References,
+			ReferencesMore:  m.Context.ReferencesMore,
+			TypeDefinition:  m.Context.TypeDefinition,
+		}
+	}
+
 	content := view.Render(m.Width, m.Height, &view.ViewData{
-		Context:         m.Context,
-		ErrorMsg:        m.ErrorMsg,
-		Connected:       m.connected,
-		LastUpdate:      m.LastUpdate,
-		Focus:           int(m.Focus),
-		ShowHover:       m.ShowHover,
-		ShowReferences:  m.ShowReferences,
-		ShowDefinition:  m.ShowDefinition,
-		ShowTypeInfo:    m.ShowTypeInfo,
-		MenuVisible:     m.MenuVisible,
-		MenuSelection:   m.MenuSelection,
+		Context:        contextData,
+		ErrorMsg:       m.ErrorMsg,
+		Connected:      m.connected,
+		LastUpdate:     m.LastUpdate,
+		Focus:          int(m.Focus),
+		ShowHover:      m.ShowHover,
+		ShowReferences: m.ShowReferences,
+		ShowDefinition: m.ShowDefinition,
+		ShowTypeInfo:   m.ShowTypeInfo,
+		MenuVisible:    m.MenuVisible,
+		MenuSelection:  m.MenuSelection,
 	}, m.styles)
 
 	return content

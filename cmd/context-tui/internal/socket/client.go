@@ -16,16 +16,16 @@ type Message struct {
 
 // ContextData represents the LSP context data
 type ContextData struct {
-	File             string         `json:"file"`
-	Line             int            `json:"line"`
-	Col              int            `json:"col"`
-	Timestamp        int64          `json:"timestamp"`
-	Hover            []string       `json:"hover,omitempty"`
-	Definition       *LocationInfo  `json:"definition,omitempty"`
-	ReferencesCount  int            `json:"references_count,omitempty"`
-	References       []LocationInfo `json:"references,omitempty"`
-	ReferencesMore   int            `json:"references_more,omitempty"`
-	TypeDefinition   *LocationInfo  `json:"type_definition,omitempty"`
+	File            string         `json:"file"`
+	Line            int            `json:"line"`
+	Col             int            `json:"col"`
+	Timestamp       int64          `json:"timestamp"`
+	Hover           []string       `json:"hover,omitempty"`
+	Definition      *LocationInfo  `json:"definition,omitempty"`
+	ReferencesCount int            `json:"references_count,omitempty"`
+	References      []LocationInfo `json:"references,omitempty"`
+	ReferencesMore  int            `json:"references_more,omitempty"`
+	TypeDefinition  *LocationInfo  `json:"type_definition,omitempty"`
 }
 
 // LocationInfo represents a file location
@@ -97,7 +97,7 @@ func (c *ContextData) FormatContextUpdate() string {
 	if c == nil {
 		return "No context data available"
 	}
-	
+
 	timestamp := time.UnixMilli(c.Timestamp)
 	return "Updated " + timestamp.Format("15:04:05")
 }
@@ -159,11 +159,11 @@ func (l *LocationInfo) GetShortPath(maxLength int) string {
 	if l == nil || l.File == "" {
 		return "Unknown"
 	}
-	
+
 	if len(l.File) <= maxLength {
 		return l.File
 	}
-	
+
 	// Show ".../" + last part
 	return ".../" + l.File[len(l.File)-maxLength+4:]
 }
