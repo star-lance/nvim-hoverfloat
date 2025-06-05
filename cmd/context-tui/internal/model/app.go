@@ -103,36 +103,19 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 
 	case socket.ContextUpdateMsg:
-		timestamp := time.Now().Format("15:04:05.000")
-		word := "no_hover"
-		if msg.Data != nil && len(msg.Data.Hover) > 0 {
-			word = "with_hover"
-		}
-		
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Received context update (%s, %s:%d)\n", 
-			timestamp, word, msg.Data.File, msg.Data.Line)
-		
 		m.Context = (*Context)(msg.Data)
 		m.LastUpdate = time.Now()
 		m.ErrorMsg = ""
-		
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Context updated, forcing redraw\n", timestamp)
 		
 		// Continue listening for more messages and force a redraw
 		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
 
 	case socket.ErrorMsg:
-		timestamp := time.Now().Format("15:04:05.000")
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Received error: %s\n", timestamp, string(msg))
-		
 		m.ErrorMsg = string(msg)
 		// Continue listening for more messages and force a redraw
 		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
 
 	case socket.ConnectionMsg:
-		timestamp := time.Now().Format("15:04:05.000")
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Socket connection: %t\n", timestamp, bool(msg))
-		
 		m.connected = bool(msg)
 		// Start listening for messages now that socket is connected
 		return m, m.listenForMessages()
@@ -351,30 +334,21 @@ func (m *App) startSocketServer() tea.Cmd {
 func (m *App) listenForMessages() tea.Cmd {
 	return func() tea.Msg {
 		if m.socketListener == nil {
-			fmt.Fprintf(os.Stderr, "[%s] TUI: No socket listener available\n", time.Now().Format("15:04:05.000"))
 			return nil
 		}
 
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Waiting for socket connection...\n", time.Now().Format("15:04:05.000"))
-		
 		conn, err := m.socketListener.Accept()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] TUI: Socket accept failed: %v\n", time.Now().Format("15:04:05.000"), err)
 			return socket.ErrorMsg("Socket connection failed")
 		}
-
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Socket connection accepted, reading message...\n", time.Now().Format("15:04:05.000"))
 
 		// Handle ONE message per connection, then close
 		decoder := json.NewDecoder(conn)
 		var msg socket.Message
 		if err := decoder.Decode(&msg); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] TUI: Failed to decode JSON: %v\n", time.Now().Format("15:04:05.000"), err)
 			conn.Close()
 			return socket.ErrorMsg("Failed to decode message")
 		}
-		
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Decoded message type: %s\n", time.Now().Format("15:04:05.000"), msg.Type)
 		
 		// Close connection after reading one message
 		conn.Close()
@@ -384,7 +358,6 @@ func (m *App) listenForMessages() tea.Cmd {
 			return socket.ContextUpdateMsg{Data: (*socket.ContextData)(&msg.Data)}
 		}
 
-		fmt.Fprintf(os.Stderr, "[%s] TUI: Ignoring unknown message type: %s\n", time.Now().Format("15:04:05.000"), msg.Type)
 		return nil
 	}
 }
