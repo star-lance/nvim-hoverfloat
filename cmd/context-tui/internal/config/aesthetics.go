@@ -11,11 +11,12 @@ import (
 
 // AestheticsConfig holds all styling configuration
 type AestheticsConfig struct {
-	Colors     ColorConfig     `json:"colors"`
-	Formatting FormattingConfig `json:"formatting"`
-	Layout     LayoutConfig     `json:"layout"`
-	Markdown   MarkdownConfig   `json:"markdown"`
-	Debug      DebugConfig      `json:"debug"`
+	Colors        ColorConfig        `json:"colors"`
+	Formatting    FormattingConfig   `json:"formatting"`
+	Layout        LayoutConfig       `json:"layout"`
+	Markdown      MarkdownConfig     `json:"markdown"`
+	Accessibility AccessibilityConfig `json:"accessibility"`
+	Debug         DebugConfig        `json:"debug"`
 }
 
 type ColorConfig struct {
@@ -118,6 +119,12 @@ type MarkdownConfig struct {
 	WordWrap          bool `json:"word_wrap"`
 }
 
+type AccessibilityConfig struct {
+	HighContrast           bool `json:"high_contrast"`
+	ReduceMotion           bool `json:"reduce_motion"`
+	ClearFocusIndicators   bool `json:"clear_focus_indicators"`
+}
+
 type DebugConfig struct {
 	ShowBoundaries       bool `json:"show_boundaries"`
 	LogColorUsage        bool `json:"log_color_usage"`
@@ -216,6 +223,8 @@ func setConfigValue(config *AestheticsConfig, section, subsection, key, value st
 		return setLayoutValue(config, subsection, key, value)
 	case "markdown":
 		return setMarkdownValue(config, key, value)
+	case "accessibility":
+		return setAccessibilityValue(config, key, value)
 	case "debug":
 		return setDebugValue(config, key, value)
 	default:
@@ -411,6 +420,22 @@ func setMarkdownValue(config *AestheticsConfig, key, value string) error {
 	return nil
 }
 
+func setAccessibilityValue(config *AestheticsConfig, key, value string) error {
+	boolVal, _ := strconv.ParseBool(value)
+	
+	switch key {
+	case "high_contrast":
+		config.Accessibility.HighContrast = boolVal
+	case "reduce_motion":
+		config.Accessibility.ReduceMotion = boolVal
+	case "clear_focus_indicators":
+		config.Accessibility.ClearFocusIndicators = boolVal
+	default:
+		return fmt.Errorf("unknown accessibility config: %s", key)
+	}
+	return nil
+}
+
 func setDebugValue(config *AestheticsConfig, key, value string) error {
 	boolVal, _ := strconv.ParseBool(value)
 	
@@ -427,8 +452,106 @@ func setDebugValue(config *AestheticsConfig, key, value string) error {
 	return nil
 }
 
-// InitializeAesthetics loads the aesthetics configuration
+// getDefaultConfig returns a default configuration for fallback
+func getDefaultConfig() *AestheticsConfig {
+	return &AestheticsConfig{
+		Colors: ColorConfig{
+			Background: BackgroundColors{
+				Primary:   "#1a1b26",
+				Secondary: "#24283b", 
+				Accent:    "#414868",
+				Floating:  "#16161e",
+				CodeBlock: "#1f2335",
+				Selection: "#283457",
+			},
+			Foreground: ForegroundColors{
+				Primary:   "#c0caf5",
+				Secondary: "#a9b1d6",
+				Comment:   "#565f89",
+				Dark:      "#545c7e",
+				Inverse:   "#1a1b26",
+			},
+			Accent: AccentColors{
+				Blue:   "#7aa2f7",
+				Green:  "#9ece6a",
+				Yellow: "#e0af68",
+				Purple: "#bb9af7",
+				Red:    "#f7768e",
+				Orange: "#ff9e64",
+				Cyan:   "#7dcfff",
+				Pink:   "#ff007c",
+			},
+			Semantic: SemanticColors{
+				Border:    "#27a1b9",
+				BorderDim: "#414868",
+				Focus:     "#7aa2f7",
+				Error:     "#f7768e",
+				Warning:   "#e0af68",
+				Success:   "#9ece6a",
+				Info:      "#7aa2f7",
+			},
+		},
+		Formatting: FormattingConfig{
+			Text: TextFormatting{
+				BoldHeaders:    true,
+				ItalicComments: true,
+				UnderlineLinks: true,
+				ItalicEmphasis: true,
+			},
+			Sections: SectionFormatting{
+				ConsistentBackgrounds: true,
+				FullWidthBackgrounds:  true,
+				UniformPadding:        true,
+				BorderStyle:          "bottom_only",
+				PaddingHorizontal:    2,
+				PaddingVertical:      1,
+			},
+			Code: CodeFormatting{
+				HighlightSyntax:      true,
+				PreserveIndentation:  true,
+				BackgroundConsistent: true,
+				BorderCodeBlocks:     false,
+			},
+		},
+		Layout: LayoutConfig{
+			Spacing: SpacingConfig{
+				SectionMarginBottom: 1,
+				HeaderPadding:      2,
+				FooterPadding:      2,
+				ContentPadding:     0,
+			},
+			Dimensions: DimensionsConfig{
+				MinWidth:      40,
+				MaxWidth:      120,
+				DefaultHeight: 25,
+			},
+		},
+		Markdown: MarkdownConfig{
+			UseGlamour:         true,
+			Theme:             "dark",
+			CodeHighlighting:  true,
+			PreserveFormatting: true,
+			WordWrap:          true,
+		},
+		Accessibility: AccessibilityConfig{
+			HighContrast:          false,
+			ReduceMotion:          false,
+			ClearFocusIndicators:  true,
+		},
+		Debug: DebugConfig{
+			ShowBoundaries:      false,
+			LogColorUsage:       false,
+			ValidateConsistency: true,
+		},
+	}
+}
+
+// InitializeAesthetics loads the aesthetics configuration with fallback
 func InitializeAesthetics() error {
 	_, err := LoadAestheticsConfig("")
-	return err
+	if err != nil {
+		// Use default config as fallback
+		Config = getDefaultConfig()
+	}
+	return nil // Always return nil so app doesn't crash
 }

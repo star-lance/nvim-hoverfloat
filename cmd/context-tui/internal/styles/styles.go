@@ -54,12 +54,17 @@ type Styles struct {
 
 // New creates a new Styles instance with all styles initialized
 func New() *Styles {
-	// Ensure config is loaded
+	// Ensure config is loaded with fallback protection
 	if config.Config == nil {
 		config.InitializeAesthetics()
 	}
 	
+	// Additional safety check - should never be nil after InitializeAesthetics
 	cfg := config.Config
+	if cfg == nil {
+		panic("Failed to initialize aesthetics configuration")
+	}
+	
 	s := &Styles{}
 
 	// Base styles - using centralized config
