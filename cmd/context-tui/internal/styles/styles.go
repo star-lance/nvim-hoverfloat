@@ -91,26 +91,24 @@ func New() *Styles {
 		Background(lipgloss.Color(BgPrimary)).
 		Foreground(lipgloss.Color(FgPrimary))
 
-	// Layout styles
+	// Layout styles - properly fill terminal width
 	s.Header = lipgloss.NewStyle().
 		Background(lipgloss.Color(BgAccent)).
 		Foreground(lipgloss.Color(Blue)).
 		Bold(true).
-		Padding(0, 1).
-		Width(100).
-		Align(lipgloss.Center)
+		Padding(0, 2).
+		Align(lipgloss.Left)
 
 	s.Footer = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgAccent)).
+		Background(lipgloss.Color(BgSecondary)).
 		Foreground(lipgloss.Color(FgComment)).
-		Padding(0, 1).
-		Width(100).
-		Align(lipgloss.Center)
+		Padding(0, 2).
+		Align(lipgloss.Left)
 
 	s.Content = lipgloss.NewStyle().
 		Background(lipgloss.Color(BgPrimary)).
 		Foreground(lipgloss.Color(FgPrimary)).
-		Padding(1)
+		Padding(0)
 
 	s.Sidebar = lipgloss.NewStyle().
 		Background(lipgloss.Color(BgSecondary)).
@@ -119,27 +117,34 @@ func New() *Styles {
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color(BorderDim))
 
-	// Section styles
+	// Section styles - full width with proper backgrounds
 	s.Section = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgPrimary)).
+		Background(lipgloss.Color(BgSecondary)).
 		Foreground(lipgloss.Color(FgPrimary)).
-		Margin(0, 0, 1, 0).
-		Padding(1).
-		Border(lipgloss.RoundedBorder()).
+		MarginBottom(1).
+		Padding(1, 2).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
 		BorderForeground(lipgloss.Color(BorderDim))
 
-	s.SectionFocused = s.Section.Copy().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(Focus)).
-		BorderStyle(lipgloss.ThickBorder())
+	s.SectionFocused = lipgloss.NewStyle().
+		Background(lipgloss.Color(BgAccent)).
+		Foreground(lipgloss.Color(FgPrimary)).
+		MarginBottom(1).
+		Padding(1, 2).
+		Border(lipgloss.ThickBorder(), false, false, true, false).
+		BorderForeground(lipgloss.Color(Focus))
 
 	s.SectionHeader = lipgloss.NewStyle().
+		Background(lipgloss.Color(BgAccent)).
 		Foreground(lipgloss.Color(Yellow)).
 		Bold(true).
+		Padding(0, 2).
 		MarginBottom(1)
 
 	s.SectionContent = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(FgPrimary))
+		Background(lipgloss.Color(BgSecondary)).
+		Foreground(lipgloss.Color(FgPrimary)).
+		Padding(0, 2)
 
 	// Menu styles
 	s.Menu = lipgloss.NewStyle().

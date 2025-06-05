@@ -67,9 +67,9 @@ func Render(width, height int, data *ViewData, s *styles.Styles) string {
 
 // renderHeader creates the header section
 func renderHeader(width int, data *ViewData, s *styles.Styles) string {
+	// Header line with status
 	title := "🔍 NEOVIM LSP CONTEXT"
-
-	// Status indicator
+	
 	var status string
 	if data.Connected {
 		status = s.StatusGood.Render("● Connected")
@@ -77,7 +77,6 @@ func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 		status = s.StatusError.Render("● Disconnected")
 	}
 
-	// Timestamp
 	var timestamp string
 	if !data.LastUpdate.IsZero() {
 		timestamp = data.LastUpdate.Format("15:04:05")
@@ -85,16 +84,19 @@ func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 		timestamp = "--:--:--"
 	}
 
-	// Build header line
-	headerContent := fmt.Sprintf("%s%s%s%s%s",
-		s.Title.Render(title),
-		strings.Repeat(" ", max(0, width-len(title)-len(status)-len(timestamp)-10)),
-		status,
-		"  ",
-		s.Comment.Render(timestamp),
-	)
+	// Calculate spacing to fill entire width
+	statusAndTime := fmt.Sprintf("%s  %s", status, s.Comment.Render(timestamp))
+	spacingNeeded := width - lipgloss.Width(title) - lipgloss.Width(statusAndTime) - 4 // padding
+	if spacingNeeded < 0 {
+		spacingNeeded = 0
+	}
 
-	// Current file info
+	headerLine1 := fmt.Sprintf("%s%s%s", 
+		title, 
+		strings.Repeat(" ", spacingNeeded), 
+		statusAndTime)
+
+	// File info line
 	var fileInfo string
 	if data.Context != nil {
 		icon := s.FileIcon(data.Context.File)
@@ -108,11 +110,13 @@ func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 		fileInfo = s.Comment.Render("No context data")
 	}
 
+	// Pad file info to full width
+	fileInfoPadded := fileInfo + strings.Repeat(" ", max(0, width-lipgloss.Width(fileInfo)-4))
+
 	header := lipgloss.JoinVertical(
 		lipgloss.Left,
-		s.WithWidth(s.Header, width).Render(headerContent),
-		s.WithWidth(s.Content, width).Render(fileInfo),
-		s.WithWidth(s.Border, width).Render(strings.Repeat("─", width)),
+		s.WithWidth(s.Header, width).Render(headerLine1),
+		s.WithWidth(s.Content, width).Render(fileInfoPadded),
 	)
 
 	return header
@@ -176,17 +180,19 @@ func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) str
 		sectionStyle = s.SectionFocused
 	}
 
-	header := s.SectionHeader.Render("📖 Documentation")
+	// Header with full width background
+	headerText := "📖 Documentation"
+	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
+	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format hover content
+	// Format hover content with full width
 	content := formatHoverContent(data.Context.Hover, width-4, s)
+	contentPadded := padContentToWidth(content, width-4)
 
-	section := sectionStyle.Copy().
-		Width(width - 2).
-		Height(height - 2).
-		Render(lipgloss.JoinVertical(lipgloss.Left, header, content))
-
-	return section
+	// Join and render section with full width
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	
+	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
 // renderReferencesSection creates the references section
@@ -201,23 +207,24 @@ func renderReferencesSection(width, height int, data *ViewData, s *styles.Styles
 		sectionStyle = s.SectionFocused
 	}
 
-	// Header with count
+	// Header with count and full width
 	refCount := data.Context.GetTotalReferences()
 	refText := "reference"
 	if refCount != 1 {
 		refText = "references"
 	}
-	header := s.SectionHeader.Render(fmt.Sprintf("🔗 References (%d %s)", refCount, refText))
+	headerText := fmt.Sprintf("🔗 References (%d %s)", refCount, refText)
+	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
+	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format references list
+	// Format references list with full width
 	content := formatReferences(data.Context, width-4, s)
+	contentPadded := padContentToWidth(content, width-4)
 
-	section := sectionStyle.Copy().
-		Width(width - 2).
-		Height(height - 2).
-		Render(lipgloss.JoinVertical(lipgloss.Left, header, content))
-
-	return section
+	// Join and render section with full width
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	
+	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
 // renderDefinitionSection creates the definition section
@@ -232,24 +239,25 @@ func renderDefinitionSection(width, height int, data *ViewData, s *styles.Styles
 		sectionStyle = s.SectionFocused
 	}
 
-	header := s.SectionHeader.Render("📍 Definition")
+	// Header with full width
+	headerText := "📍 Definition"
+	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
+	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format definition location
+	// Format definition location with full width
 	def := data.Context.Definition
 	location := fmt.Sprintf("%s:%d:%d",
 		s.Path.Render(truncateString(def.File, width-10)),
 		def.Line,
 		def.Col,
 	)
+	
+	contentPadded := padContentToWidth(location, width-4)
 
-	content := s.Body.Render(location)
-
-	section := sectionStyle.Copy().
-		Width(width - 2).
-		Height(height - 2).
-		Render(lipgloss.JoinVertical(lipgloss.Left, header, content))
-
-	return section
+	// Join and render section with full width
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	
+	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
 // renderTypeDefinitionSection creates the type definition section
@@ -264,24 +272,25 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 		sectionStyle = s.SectionFocused
 	}
 
-	header := s.SectionHeader.Render("🎯 Type Definition")
+	// Header with full width
+	headerText := "🎯 Type Definition"
+	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
+	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format type definition location
+	// Format type definition location with full width
 	typedef := data.Context.TypeDefinition
 	location := fmt.Sprintf("%s:%d:%d",
 		s.Path.Render(truncateString(typedef.File, width-10)),
 		typedef.Line,
 		typedef.Col,
 	)
+	
+	contentPadded := padContentToWidth(location, width-4)
 
-	content := s.Body.Render(location)
-
-	section := sectionStyle.Copy().
-		Width(width - 2).
-		Height(height - 2).
-		Render(lipgloss.JoinVertical(lipgloss.Left, header, content))
-
-	return section
+	// Join and render section with full width
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	
+	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
 // renderMenu creates the interactive menu overlay
@@ -428,14 +437,17 @@ func renderFooter(width int, data *ViewData, s *styles.Styles) string {
 	// Key bindings help
 	bindings := []string{
 		s.Keybind.Render("?") + " menu",
-		s.Keybind.Render("hjkl") + " navigate",
+		s.Keybind.Render("hjkl") + " navigate", 
 		s.Keybind.Render("enter") + " toggle",
 		s.Keybind.Render("q") + " quit",
 	}
 
 	help := strings.Join(bindings, "  ")
+	
+	// Pad to full width
+	helpPadded := help + strings.Repeat(" ", max(0, width-lipgloss.Width(help)-4))
 
-	footer := s.WithWidth(s.Footer, width).Render(help)
+	footer := s.WithWidth(s.Footer, width).Render(helpPadded)
 
 	return footer
 }
@@ -486,4 +498,19 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// padContentToWidth ensures each line in content extends to full width with background
+func padContentToWidth(content string, width int) string {
+	lines := strings.Split(content, "\n")
+	var paddedLines []string
+	
+	for _, line := range lines {
+		lineWidth := lipgloss.Width(line)
+		padding := max(0, width-lineWidth)
+		paddedLine := line + strings.Repeat(" ", padding)
+		paddedLines = append(paddedLines, paddedLine)
+	}
+	
+	return strings.Join(paddedLines, "\n")
 }
