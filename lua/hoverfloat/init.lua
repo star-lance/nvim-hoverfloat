@@ -52,9 +52,8 @@ local state = {
   socket_connected = false,
   plugin_enabled = true,
   binary_path = nil,
-  -- New content-based caching
-  last_context_hash = nil,
-  last_symbol_position = nil,
+  -- Only cache the last message sent to prevent duplicate sends
+  last_sent_hash = nil,
 }
 
 -- Helper function to find TUI binary
@@ -198,44 +197,23 @@ local function hash_context_data(context_data)
   return vim.fn.sha256(vim.json.encode(stable_data))
 end
 
--- Check if we should update context based on symbol and content changes
+-- Check if we should update context - now much simpler, just basic checks
 local function should_update_context()
   if not state.plugin_enabled then return false end
   if not has_lsp_clients() then return false end
   if should_skip_update() then return false end
   
-  -- Quick check: get current symbol under cursor
-  local current_symbol = lsp_collector.get_symbol_at_cursor()
-  
-  -- If we can't get a symbol, always update (might be whitespace/special position)
-  if not current_symbol then
-    return true
-  end
-  
-  -- If we have a cached symbol position, compare
-  if state.last_symbol_position then
-    local same_word = current_symbol.word == state.last_symbol_position.word
-    local same_line = current_symbol.line == state.last_symbol_position.line
-    local similar_col = math.abs(current_symbol.col - state.last_symbol_position.col) <= 3
-    
-    -- If we're on the same symbol in roughly the same position, probably no update needed
-    if same_word and same_line and similar_col then
-      return false
-    end
-  end
-  
-  -- Symbol or position changed significantly, worth checking
+  -- Always proceed to check actual content - no aggressive pre-filtering
   return true
 end
 
--- Smart content-based context update
+-- Content-based context update - only prevents sending exact duplicates
 local function update_context()
-  -- Quick pre-check to avoid expensive LSP calls
   if not should_update_context() then
     return
   end
 
-  -- Collect full LSP context information
+  -- Always collect LSP context information 
   lsp_collector.gather_context_info(function(context_data)
     if not context_data then
       return
@@ -244,11 +222,10 @@ local function update_context()
     -- Generate hash of the new context data
     local new_hash = hash_context_data(context_data)
     
-    -- Compare with cached hash - only send if content actually changed
-    if new_hash ~= state.last_context_hash then
-      -- Content changed meaningfully, send update
-      state.last_context_hash = new_hash
-      state.last_symbol_position = lsp_collector.get_symbol_at_cursor()
+    -- Only skip if this is EXACTLY the same as the last message we sent
+    if new_hash ~= state.last_sent_hash then
+      -- Content is different from last sent message, send update
+      state.last_sent_hash = new_hash
       socket_client.send_context_update(context_data)
     end
   end, state.config.features)
@@ -411,11 +388,9 @@ local function setup_commands()
     elseif action == 'debug' then
       -- Force trigger LSP collection for debugging
       vim.notify("Debug: Forcing LSP data collection...", vim.log.levels.INFO)
-      vim.notify("Debug: Last hash: " .. (state.last_context_hash or "none"), vim.log.levels.INFO)
-      vim.notify("Debug: Last symbol: " .. vim.inspect(state.last_symbol_position), vim.log.levels.INFO)
+      vim.notify("Debug: Last sent hash: " .. (state.last_sent_hash or "none"), vim.log.levels.INFO)
       -- Force update by clearing cache
-      state.last_context_hash = nil
-      state.last_symbol_position = nil
+      state.last_sent_hash = nil
       update_context()
     else
       vim.notify('Usage: ContextWindow [open|close|toggle|restart|status|health|debug]', vim.log.levels.INFO)
@@ -516,9 +491,8 @@ M.get_status = function()
     last_position = state.last_position,
     binary_path = state.binary_path,
     config = state.config,
-    -- New content-based cache status
-    last_context_hash = state.last_context_hash,
-    last_symbol_position = state.last_symbol_position,
+    -- Only track last sent message hash
+    last_sent_hash = state.last_sent_hash,
     lsp_cache_stats = lsp_collector.get_cache_stats(),
   }
 end
@@ -539,8 +513,7 @@ end
 
 -- Clear content cache (useful for debugging or forcing updates)
 M.clear_content_cache = function()
-  state.last_context_hash = nil
-  state.last_symbol_position = nil
+  state.last_sent_hash = nil
   lsp_collector.clear_cache()
   vim.notify("Content cache cleared", vim.log.levels.INFO)
 end
