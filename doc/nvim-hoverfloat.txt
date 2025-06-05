@@ -1,0 +1,373 @@
+*nvim-hoverfloat.txt*    Interactive LSP context window for Neovim
+
+Author: star-lance
+License: MIT
+Version: 1.0.0
+
+==============================================================================
+CONTENTS                                               *nvim-hoverfloat-contents*
+
+1. Introduction ................................ |nvim-hoverfloat-introduction|
+2. Requirements ................................ |nvim-hoverfloat-requirements|
+3. Installation ................................ |nvim-hoverfloat-installation|
+4. Configuration ............................... |nvim-hoverfloat-configuration|
+5. Usage ....................................... |nvim-hoverfloat-usage|
+6. Commands .................................... |nvim-hoverfloat-commands|
+7. Mappings .................................... |nvim-hoverfloat-mappings|
+8. TUI Controls ................................ |nvim-hoverfloat-tui-controls|
+9. Health Check ................................ |nvim-hoverfloat-health|
+10. Troubleshooting ............................ |nvim-hoverfloat-troubleshooting|
+11. API ........................................ |nvim-hoverfloat-api|
+
+==============================================================================
+1. INTRODUCTION                                    *nvim-hoverfloat-introduction*
+
+nvim-hoverfloat provides an interactive LSP context window that displays 
+hover information, references, definitions, and type information in real-time
+as you move your cursor in Neovim.
+
+Features:
+- Real-time LSP context updates
+- Interactive TUI with hjkl navigation
+- Toggle sections on/off
+- Beautiful Tokyo Night theme
+- High performance Go-based TUI
+- Separate terminal window
+
+==============================================================================
+2. REQUIREMENTS                                    *nvim-hoverfloat-requirements*
+
+- Neovim 0.8+ with LSP support
+- Go 1.21+ (for building)
+- Terminal emulator (kitty recommended)
+- At least one LSP server configured in Neovim
+
+Optional:
+- kitty terminal for best experience
+- Hyprland for window management rules
+
+==============================================================================
+3. INSTALLATION                                    *nvim-hoverfloat-installation*
+
+Using lazy.nvim: >
+    {
+      "star-lance/nvim-hoverfloat",
+      build = "make install",
+      config = function()
+        require("hoverfloat").setup()
+      end,
+    }
+<
+
+Using packer.nvim: >
+    use {
+      'star-lance/nvim-hoverfloat',
+      run = 'make install',
+      config = function()
+        require("hoverfloat").setup()
+      end
+    }
+<
+
+Manual installation:
+1. Clone the repository
+2. Run `make install` to build the TUI binary
+3. Add `require("hoverfloat").setup()` to your config
+
+==============================================================================
+4. CONFIGURATION                                  *nvim-hoverfloat-configuration*
+
+Default configuration: >
+    require("hoverfloat").setup({
+      -- TUI settings
+      tui = {
+        binary_name = "nvim-context-tui",
+        binary_path = nil, -- Auto-detect
+        window_title = "LSP Context",
+        window_size = { width = 80, height = 25 },
+        terminal_cmd = "kitty",
+      },
+      
+      -- Communication settings
+      communication = {
+        socket_path = "/tmp/nvim_context.sock",
+        timeout = 5000,
+        retry_attempts = 3,
+        update_delay = 150,
+      },
+      
+      -- Feature toggles
+      features = {
+        show_hover = true,
+        show_references = true,
+        show_definition = true,
+        show_type_info = true,
+        max_hover_lines = 15,
+        max_references = 8,
+      },
+      
+      -- Cursor tracking
+      tracking = {
+        excluded_filetypes = { "help", "qf", "netrw", "fugitive" },
+        min_cursor_movement = 3,
+      },
+      
+      -- Auto-start
+      auto_start = true,
+      auto_restart_on_error = true,
+    })
+<
+
+                                              *nvim-hoverfloat-config-tui*
+tui.binary_name~
+    Name of the TUI binary executable.
+    Default: "nvim-context-tui"
+
+tui.binary_path~
+    Full path to the TUI binary. If nil, will auto-detect.
+    Default: nil
+
+tui.window_title~
+    Title shown in the terminal window.
+    Default: "LSP Context"
+
+tui.window_size~
+    Initial window size as {width, height}.
+    Default: { width = 80, height = 25 }
+
+tui.terminal_cmd~
+    Terminal command to spawn the TUI.
+    Default: "kitty"
+
+                                         *nvim-hoverfloat-config-communication*
+communication.socket_path~
+    Path to the Unix domain socket for IPC.
+    Default: "/tmp/nvim_context.sock"
+
+communication.timeout~
+    Connection timeout in milliseconds.
+    Default: 5000
+
+communication.update_delay~
+    Debounce delay for cursor movement updates.
+    Default: 150
+
+                                           *nvim-hoverfloat-config-features*
+features.show_hover~
+    Show hover documentation by default.
+    Default: true
+
+features.show_references~
+    Show references by default.
+    Default: true
+
+features.max_hover_lines~
+    Maximum lines to show in hover section.
+    Default: 15
+
+==============================================================================
+5. USAGE                                                 *nvim-hoverfloat-usage*
+
+The plugin automatically starts when Neovim loads (if auto_start is true).
+As you move your cursor, the context window updates with relevant LSP
+information.
+
+The TUI displays up to four sections:
+- Hover documentation
+- References list  
+- Definition location
+- Type definition location
+
+Each section can be toggled on/off independently.
+
+==============================================================================
+6. COMMANDS                                           *nvim-hoverfloat-commands*
+
+                                                        *:ContextWindow*
+:ContextWindow [action]
+    Main command for controlling the context window.
+    
+    Actions:
+    - open/start: Open the context window
+    - close/stop: Close the context window  
+    - toggle: Toggle the context window
+    - restart: Restart the context window
+    - status: Show status information
+    - health: Run health check
+
+    Default action (no args): toggle
+
+                                                    *:ContextWindowOpen*
+:ContextWindowOpen
+    Open the LSP context display window.
+
+                                                   *:ContextWindowClose*
+:ContextWindowClose
+    Close the LSP context display window.
+
+                                                  *:ContextWindowToggle*
+:ContextWindowToggle
+    Toggle the LSP context display window.
+
+==============================================================================
+7. MAPPINGS                                           *nvim-hoverfloat-mappings*
+
+Default key mappings:
+
+<leader>co                                    *nvim-hoverfloat-<leader>co*
+    Open context window.
+
+<leader>cc                                    *nvim-hoverfloat-<leader>cc*
+    Close context window.
+
+<leader>ct                                    *nvim-hoverfloat-<leader>ct*
+    Toggle context window.
+
+<leader>cr                                    *nvim-hoverfloat-<leader>cr*
+    Restart context window.
+
+<leader>cs                                    *nvim-hoverfloat-<leader>cs*
+    Show context window status.
+
+To disable default mappings, set up manually: >
+    require("hoverfloat").setup({
+      -- ... other config
+    })
+    
+    -- Custom mappings
+    vim.keymap.set('n', '<C-h>', ':ContextWindow toggle<CR>', 
+      { desc = 'Toggle Context Window' })
+<
+
+==============================================================================
+8. TUI CONTROLS                                   *nvim-hoverfloat-tui-controls*
+
+When the TUI window is active, use these controls:
+
+Navigation:
+h, ←                Move focus left (reserved for future use)
+j, ↓                Move focus to next section
+k, ↑                Move focus to previous section  
+l, →                Move focus right (reserved for future use)
+
+Actions:
+<Enter>, <Space>    Toggle current section on/off
+H                   Toggle hover documentation
+R                   Toggle references
+D                   Toggle definition
+T                   Toggle type information
+
+Menu:
+?, F1               Show/hide help menu
+j, k                Navigate menu items (when menu open)
+<Enter>             Select menu item
+<Esc>               Close menu
+
+General:
+q, <C-c>            Quit TUI
+
+==============================================================================
+9. HEALTH CHECK                                     *nvim-hoverfloat-health*
+
+Run the health check to diagnose issues: >
+    :checkhealth nvim-hoverfloat
+<
+
+The health check verifies:
+- TUI binary installation
+- LSP client availability
+- Terminal executable
+- Socket permissions
+- Plugin status
+
+==============================================================================
+10. TROUBLESHOOTING                           *nvim-hoverfloat-troubleshooting*
+
+Common issues and solutions:
+
+TUI binary not found~
+    Solution: Rebuild and reinstall
+    >
+        cd /path/to/nvim-hoverfloat
+        make clean && make install
+    <
+    
+    Or specify binary path manually: >
+        require("hoverfloat").set_binary_path("/path/to/binary")
+    <
+
+Socket connection issues~
+    Check if socket exists: >
+        ls -la /tmp/nvim_context.sock
+    <
+    
+    Restart the plugin: >
+        :ContextWindow restart
+    <
+
+LSP not working~
+    Check LSP status: >
+        :LspInfo
+    <
+    
+    Ensure LSP is attached: >
+        :lua print(#vim.lsp.get_clients({ bufnr = 0 }))
+    <
+
+Terminal issues~
+    Try different terminal: >
+        require("hoverfloat").setup({
+          tui = { terminal_cmd = "alacritty" }
+        })
+    <
+
+Permission denied~
+    Check socket directory permissions: >
+        ls -ld /tmp
+    <
+
+==============================================================================
+11. API                                                 *nvim-hoverfloat-api*
+
+The plugin provides a Lua API for programmatic control:
+
+require("hoverfloat").setup({config})                *hoverfloat.setup()*
+    Initialize the plugin with configuration.
+
+require("hoverfloat").start()                        *hoverfloat.start()*
+    Start the context window.
+
+require("hoverfloat").stop()                         *hoverfloat.stop()*
+    Stop the context window.
+
+require("hoverfloat").toggle()                       *hoverfloat.toggle()*
+    Toggle the context window.
+
+require("hoverfloat").enable()                       *hoverfloat.enable()*
+    Enable the plugin.
+
+require("hoverfloat").disable()                      *hoverfloat.disable()*
+    Disable the plugin.
+
+require("hoverfloat").is_running()                   *hoverfloat.is_running()*
+    Check if the TUI process is running.
+    Returns: boolean
+
+require("hoverfloat").get_status()                   *hoverfloat.get_status()*
+    Get detailed status information.
+    Returns: table with status fields
+
+require("hoverfloat").get_config()                   *hoverfloat.get_config()*
+    Get current configuration.
+    Returns: table with configuration
+
+require("hoverfloat").set_binary_path(path)     *hoverfloat.set_binary_path()*
+    Set custom path to TUI binary.
+    Parameters: path (string)
+    Returns: boolean (success)
+
+require("hoverfloat").health()                       *hoverfloat.health()*
+    Run health check programmatically.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:

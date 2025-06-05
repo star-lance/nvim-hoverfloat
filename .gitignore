@@ -1,0 +1,143 @@
+# Build artifacts
+build/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+cmd/context-tui/nvim-context-tui*
+dev/bin/
+dev/context-tui/context-tui*
+dev/mock-nvim-client/mock-nvim-client*
+
+# Go module files
+go.work
+go.work.sum
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories (Go modules)
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+debug*.log
+
+# Socket files
+*.sock
+/tmp/nvim_context.sock
+
+# Runtime files
+*.pid
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Package files
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Development artifacts
+.devcontainer/
+docker-compose.override.yml
+
+# Documentation build
+doc/tags
+doc/tags-*
+
+# Lua compiled bytecode
+*.luac
+
+# Package manager directories
+lua_modules/
+.luarocks/
+
+# Testing
+coverage.out
+test_results/
+benchmark_results/
+
+# Release artifacts
+releases/
+
+# Local configuration overrides
+config.local.*
+.env.local
+.env.*.local
+
+# Neovim specific
+.nvim.lua
+.nvimrc.local
+
+# Editor directories and files
+.vscode
+.vs/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# direnv
+.envrc
+
+# Local development databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Performance profiling
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+block.prof
+mutex.prof
+trace.out
+
+# Benchmark results
+benchmarks/
+
+# Generated documentation
+docs/_build/
+docs/site/
+
+# Cache directories
+.cache/
+.go-cache/

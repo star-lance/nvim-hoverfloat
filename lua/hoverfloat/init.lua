@@ -4,49 +4,160 @@ local M = {}
 local lsp_collector = require('hoverfloat.lsp_collector')
 local socket_client = require('hoverfloat.socket_client')
 
--- Plugin configuration
-local config = {
-  -- Display settings
-  socket_path = "/tmp/nvim_context.sock",
-  update_delay = 150, -- Debounce delay in milliseconds
-  window_title = "LSP Context",
+-- Default configuration
+local default_config = {
+  -- TUI settings
+  tui = {
+    binary_name = "nvim-context-tui",
+    binary_path = nil, -- Auto-detect or user-specified
+    window_title = "LSP Context",
+    window_size = { width = 80, height = 25 },
+    terminal_cmd = "kitty", -- Terminal to spawn TUI in
+  },
 
-  -- Kitty terminal settings
-  terminal_cmd = "kitty",
-  terminal_args = {
-    "--title=LSP Context",
-    "--override=font_size=11",
-    "--override=remember_window_size=no",
-    "--override=initial_window_width=80c",
-    "--override=initial_window_height=25c",
-    "--hold",
-    "-e", "python3"
+  -- Communication settings
+  communication = {
+    socket_path = "/tmp/nvim_context.sock",
+    timeout = 5000,
+    retry_attempts = 3,
+    update_delay = 150, -- Debounce delay in milliseconds
   },
 
   -- LSP feature toggles
-  show_references_count = true,
-  show_type_info = true,
-  show_definition_location = true,
-  max_references_shown = 8,
-  max_hover_lines = 8,
+  features = {
+    show_hover = true,
+    show_references = true,
+    show_definition = true,
+    show_type_info = true,
+    max_hover_lines = 15,
+    max_references = 8,
+  },
 
   -- Cursor tracking settings
-  excluded_filetypes = { "help", "qf", "netrw", "fugitive" },
-  min_cursor_movement = 3, -- Minimum column movement to trigger update
+  tracking = {
+    excluded_filetypes = { "help", "qf", "netrw", "fugitive", "TelescopePrompt" },
+    min_cursor_movement = 3, -- Minimum column movement to trigger update
+  },
 
   -- Auto-start settings
   auto_start = true,
   auto_restart_on_error = true,
 }
 
--- State tracking
+-- Plugin state
 local state = {
+  config = {},
   last_position = { 0, 0 },
   update_timer = nil,
   display_process = nil,
   socket_connected = false,
   plugin_enabled = true,
+  binary_path = nil,
 }
+
+-- Helper function to find TUI binary
+local function find_tui_binary()
+  if state.binary_path then
+    return state.binary_path
+  end
+
+  local possible_paths = {
+    -- Development paths
+    './nvim-context-tui',
+    './build/nvim-context-tui',
+    './cmd/context-tui/nvim-context-tui',
+
+    -- Plugin installation paths
+    vim.fn.stdpath('data') .. '/lazy/nvim-hoverfloat/nvim-context-tui',
+    vim.fn.stdpath('data') .. '/lazy/nvim-hoverfloat/build/nvim-context-tui',
+
+    -- User installation paths
+    vim.fn.expand('~/.local/bin/nvim-context-tui'),
+    '/usr/local/bin/nvim-context-tui',
+    '/usr/bin/nvim-context-tui',
+  }
+
+  for _, path in ipairs(possible_paths) do
+    if vim.fn.executable(path) == 1 then
+      state.binary_path = path
+      return path
+    end
+  end
+
+  -- Try PATH
+  if vim.fn.executable(state.config.tui.binary_name) == 1 then
+    state.binary_path = state.config.tui.binary_name
+    return state.binary_path
+  end
+
+  return nil
+end
+
+-- Health check function
+function M.health()
+  local health = vim.health or require('health')
+
+  health.start('nvim-hoverfloat')
+
+  -- Check if TUI binary exists
+  local binary_path = find_tui_binary()
+  if binary_path then
+    health.ok('TUI binary found: ' .. binary_path)
+  else
+    health.error('TUI binary not found', {
+      'Run `make build` in the plugin directory',
+      'Or install with `make install`',
+      'Or ensure nvim-context-tui is in your PATH'
+    })
+  end
+
+  -- Check LSP availability
+  local clients = vim.lsp.get_clients({ bufnr = 0 })
+  if #clients > 0 then
+    health.ok(string.format('LSP clients available (%d active)', #clients))
+    for _, client in ipairs(clients) do
+      health.info('  • ' .. (client.name or 'unnamed'))
+    end
+  else
+    health.warn('No LSP clients attached to current buffer')
+  end
+
+  -- Check terminal
+  if vim.fn.executable(state.config.tui.terminal_cmd) == 1 then
+    health.ok('Terminal executable found: ' .. state.config.tui.terminal_cmd)
+  else
+    health.error('Terminal not found: ' .. state.config.tui.terminal_cmd, {
+      'Install kitty or update config.tui.terminal_cmd'
+    })
+  end
+
+  -- Check socket permissions
+  local socket_dir = vim.fn.fnamemodify(state.config.communication.socket_path, ':h')
+  if vim.fn.isdirectory(socket_dir) == 1 then
+    health.ok('Socket directory accessible: ' .. socket_dir)
+  else
+    health.warn('Socket directory not accessible: ' .. socket_dir)
+  end
+
+  -- Plugin status
+  if state.plugin_enabled then
+    health.ok('Plugin enabled')
+  else
+    health.warn('Plugin disabled')
+  end
+
+  if state.display_process then
+    health.ok('TUI process running')
+  else
+    health.info('TUI process not running')
+  end
+
+  if state.socket_connected then
+    health.ok('Socket connected')
+  else
+    health.info('Socket not connected')
+  end
+end
 
 -- Helper function to check if LSP clients are available
 local function has_lsp_clients()
@@ -57,7 +168,7 @@ end
 -- Check if current filetype should be excluded
 local function should_skip_update()
   local filetype = vim.bo.filetype
-  for _, excluded in ipairs(config.excluded_filetypes) do
+  for _, excluded in ipairs(state.config.tracking.excluded_filetypes) do
     if filetype == excluded then
       return true
     end
@@ -69,7 +180,7 @@ end
 local function cursor_moved_significantly()
   local cursor = vim.api.nvim_win_get_cursor(0)
   local moved = cursor[1] ~= state.last_position[1] or
-      math.abs(cursor[2] - state.last_position[2]) >= config.min_cursor_movement
+      math.abs(cursor[2] - state.last_position[2]) >= state.config.tracking.min_cursor_movement
 
   if moved then
     state.last_position = cursor
@@ -94,7 +205,7 @@ local function update_context()
     if context_data then
       socket_client.send_context_update(context_data)
     end
-  end, config)
+  end, state.config.features)
 end
 
 -- Debounced update function
@@ -103,7 +214,7 @@ local function debounced_update()
     vim.fn.timer_stop(state.update_timer)
   end
 
-  state.update_timer = vim.fn.timer_start(config.update_delay, function()
+  state.update_timer = vim.fn.timer_start(state.config.communication.update_delay, function()
     update_context()
     state.update_timer = nil
   end)
@@ -112,31 +223,44 @@ end
 -- Start the display process
 local function start_display_process()
   if state.display_process then
-    print("Display process already running")
+    vim.notify("Display process already running", vim.log.levels.WARN)
     return true
   end
 
-  -- Create the display script path
-  local script_path = debug.getinfo(1).source:match("@?(.*/)")
-  local display_script = script_path .. "../../scripts/context_display.py"
+  -- Find TUI binary
+  local binary_path = find_tui_binary()
+  if not binary_path then
+    vim.notify("TUI binary not found. Run :checkhealth nvim-hoverfloat for help.", vim.log.levels.ERROR)
+    return false
+  end
 
-  -- Build command arguments
-  local cmd_args = vim.deepcopy(config.terminal_args)
-  table.insert(cmd_args, display_script)
-  table.insert(cmd_args, config.socket_path)
+  -- Build terminal command
+  local terminal_args = {
+    "--title=" .. state.config.tui.window_title,
+    "--override=initial_window_width=" .. state.config.tui.window_size.width .. "c",
+    "--override=initial_window_height=" .. state.config.tui.window_size.height .. "c",
+    "--override=remember_window_size=no",
+    "--hold",
+    "-e", binary_path, state.config.communication.socket_path
+  }
 
-  -- Start the terminal with display script
+  -- Start the terminal with TUI
   local handle = vim.fn.jobstart(
-    { config.terminal_cmd, unpack(cmd_args) },
+    { state.config.tui.terminal_cmd, unpack(terminal_args) },
     {
       detach = true,
       on_exit = function(job_id, exit_code, event)
         state.display_process = nil
         state.socket_connected = false
 
-        if exit_code ~= 0 and config.auto_restart_on_error then
-          print("Display process exited unexpectedly, restarting...")
+        if exit_code ~= 0 and state.config.auto_restart_on_error then
+          vim.notify("Display process exited unexpectedly, restarting...", vim.log.levels.WARN)
           vim.defer_fn(start_display_process, 1000)
+        end
+      end,
+      on_stderr = function(job_id, data, event)
+        if #data > 1 or (data[1] and data[1] ~= "") then
+          vim.notify("TUI error: " .. table.concat(data, "\n"), vim.log.levels.ERROR)
         end
       end
     }
@@ -144,18 +268,18 @@ local function start_display_process()
 
   if handle > 0 then
     state.display_process = handle
-    print("Context display window started")
+    vim.notify("Context display window started", vim.log.levels.INFO)
 
     -- Wait a moment for the display to initialize, then connect socket
     vim.defer_fn(function()
-      socket_client.connect(config.socket_path)
+      socket_client.connect(state.config.communication.socket_path)
       -- Send initial update
       vim.defer_fn(debounced_update, 500)
     end, 1000)
 
     return true
   else
-    print("Failed to start display process")
+    vim.notify("Failed to start display process", vim.log.levels.ERROR)
     return false
   end
 end
@@ -168,7 +292,7 @@ local function stop_display_process()
     vim.fn.jobstop(state.display_process)
     state.display_process = nil
     state.socket_connected = false
-    print("Context display window closed")
+    vim.notify("Context display window closed", vim.log.levels.INFO)
   end
 end
 
@@ -216,6 +340,38 @@ end
 
 -- Setup user commands
 local function setup_commands()
+  vim.api.nvim_create_user_command('ContextWindow', function(opts)
+    local action = opts.args ~= '' and opts.args or 'toggle'
+
+    if action == 'open' or action == 'start' then
+      start_display_process()
+    elseif action == 'close' or action == 'stop' then
+      stop_display_process()
+    elseif action == 'toggle' then
+      if state.display_process then
+        stop_display_process()
+      else
+        start_display_process()
+      end
+    elseif action == 'restart' then
+      stop_display_process()
+      vim.defer_fn(start_display_process, 500)
+    elseif action == 'status' then
+      print(vim.inspect(M.get_status()))
+    elseif action == 'health' then
+      M.health()
+    else
+      vim.notify('Usage: ContextWindow [open|close|toggle|restart|status|health]', vim.log.levels.INFO)
+    end
+  end, {
+    nargs = '?',
+    complete = function()
+      return { 'open', 'close', 'toggle', 'restart', 'status', 'health' }
+    end,
+    desc = 'Manage LSP context window'
+  })
+
+  -- Legacy commands for backwards compatibility
   vim.api.nvim_create_user_command("ContextWindowOpen", function()
     start_display_process()
   end, { desc = "Open LSP context display window" })
@@ -231,42 +387,29 @@ local function setup_commands()
       start_display_process()
     end
   end, { desc = "Toggle LSP context display window" })
-
-  vim.api.nvim_create_user_command("ContextWindowRestart", function()
-    stop_display_process()
-    vim.defer_fn(start_display_process, 500)
-  end, { desc = "Restart LSP context display window" })
-
-  vim.api.nvim_create_user_command("ContextWindowEnable", function()
-    state.plugin_enabled = true
-    print("Context window plugin enabled")
-  end, { desc = "Enable context window updates" })
-
-  vim.api.nvim_create_user_command("ContextWindowDisable", function()
-    state.plugin_enabled = false
-    print("Context window plugin disabled")
-  end, { desc = "Disable context window updates" })
 end
 
 -- Setup keymaps
 local function setup_keymaps()
-  vim.keymap.set('n', '<leader>co', ':ContextWindowOpen<CR>',
+  vim.keymap.set('n', '<leader>co', ':ContextWindow open<CR>',
     { desc = 'Open Context Window', silent = true })
-  vim.keymap.set('n', '<leader>cc', ':ContextWindowClose<CR>',
+  vim.keymap.set('n', '<leader>cc', ':ContextWindow close<CR>',
     { desc = 'Close Context Window', silent = true })
-  vim.keymap.set('n', '<leader>ct', ':ContextWindowToggle<CR>',
+  vim.keymap.set('n', '<leader>ct', ':ContextWindow toggle<CR>',
     { desc = 'Toggle Context Window', silent = true })
-  vim.keymap.set('n', '<leader>cr', ':ContextWindowRestart<CR>',
+  vim.keymap.set('n', '<leader>cr', ':ContextWindow restart<CR>',
     { desc = 'Restart Context Window', silent = true })
+  vim.keymap.set('n', '<leader>cs', ':ContextWindow status<CR>',
+    { desc = 'Context Window Status', silent = true })
 end
 
 -- Main setup function
 function M.setup(opts)
-  -- Merge user configuration
-  config = vim.tbl_deep_extend("force", config, opts or {})
+  -- Merge user configuration with defaults
+  state.config = vim.tbl_deep_extend("force", default_config, opts or {})
 
   -- Initialize socket client
-  socket_client.setup(config)
+  socket_client.setup(state.config.communication)
 
   -- Setup plugin components
   setup_autocmds()
@@ -274,13 +417,13 @@ function M.setup(opts)
   setup_keymaps()
 
   -- Auto-start if configured
-  if config.auto_start then
+  if state.config.auto_start then
     vim.defer_fn(function()
       start_display_process()
     end, 1000) -- Give Neovim time to fully load
   end
 
-  print("LSP Context Window plugin loaded")
+  vim.notify("LSP Context Window plugin loaded", vim.log.levels.INFO)
 end
 
 -- Public API
@@ -296,10 +439,12 @@ end
 
 M.enable = function()
   state.plugin_enabled = true
+  vim.notify("Context window plugin enabled", vim.log.levels.INFO)
 end
 
 M.disable = function()
   state.plugin_enabled = false
+  vim.notify("Context window plugin disabled", vim.log.levels.INFO)
 end
 
 M.is_running = function()
@@ -312,7 +457,23 @@ M.get_status = function()
     running = state.display_process ~= nil,
     connected = state.socket_connected,
     last_position = state.last_position,
+    binary_path = state.binary_path,
+    config = state.config,
   }
+end
+
+M.get_config = function()
+  return vim.deepcopy(state.config)
+end
+
+M.set_binary_path = function(path)
+  if vim.fn.executable(path) == 1 then
+    state.binary_path = path
+    return true
+  else
+    vim.notify("Binary not executable: " .. path, vim.log.levels.ERROR)
+    return false
+  end
 end
 
 return M
