@@ -2,40 +2,10 @@ package styles
 
 import (
 	"github.com/charmbracelet/lipgloss"
+	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/config"
 )
 
-// TokyoNight color palette to match Neovim theme
-const (
-	// Background colors
-	BgPrimary   = "#1a1b26"
-	BgSecondary = "#24283b"
-	BgAccent    = "#414868"
-	BgFloat     = "#16161e"
-
-	// Foreground colors
-	FgPrimary   = "#c0caf5"
-	FgSecondary = "#a9b1d6"
-	FgComment   = "#565f89"
-	FgDark      = "#545c7e"
-
-	// Accent colors
-	Blue   = "#7aa2f7"
-	Green  = "#9ece6a"
-	Yellow = "#e0af68"
-	Purple = "#bb9af7"
-	Red    = "#f7768e"
-	Orange = "#ff9e64"
-	Cyan   = "#7dcfff"
-	Pink   = "#ff007c"
-
-	// Special colors
-	Border    = "#27a1b9"
-	BorderDim = "#414868"
-	Focus     = "#7aa2f7"
-	Error     = "#f7768e"
-	Warning   = "#e0af68"
-	Success   = "#9ece6a"
-)
+// Colors are now loaded from aesthetics.conf - no more hardcoded values!
 
 // Styles contains all styled components
 type Styles struct {
@@ -84,157 +54,174 @@ type Styles struct {
 
 // New creates a new Styles instance with all styles initialized
 func New() *Styles {
+	// Ensure config is loaded
+	if config.Config == nil {
+		config.InitializeAesthetics()
+	}
+	
+	cfg := config.Config
 	s := &Styles{}
 
-	// Base styles
+	// Base styles - using centralized config
 	s.Base = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgPrimary)).
-		Foreground(lipgloss.Color(FgPrimary))
+		Background(lipgloss.Color(cfg.Colors.Background.Primary)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Primary))
 
-	// Layout styles - properly fill terminal width
+	// Layout styles - using config with consistent full-width backgrounds
 	s.Header = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgAccent)).
-		Foreground(lipgloss.Color(Blue)).
-		Bold(true).
-		Padding(0, 2).
+		Background(lipgloss.Color(cfg.Colors.Background.Accent)).
+		Foreground(lipgloss.Color(cfg.Colors.Accent.Blue)).
+		Bold(cfg.Formatting.Text.BoldHeaders).
+		Padding(0, cfg.Layout.Spacing.HeaderPadding).
 		Align(lipgloss.Left)
 
 	s.Footer = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgSecondary)).
-		Foreground(lipgloss.Color(FgComment)).
-		Padding(0, 2).
+		Background(lipgloss.Color(cfg.Colors.Background.Secondary)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Comment)).
+		Padding(0, cfg.Layout.Spacing.FooterPadding).
 		Align(lipgloss.Left)
 
 	s.Content = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgPrimary)).
-		Foreground(lipgloss.Color(FgPrimary)).
-		Padding(0)
+		Background(lipgloss.Color(cfg.Colors.Background.Primary)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Primary)).
+		Padding(cfg.Layout.Spacing.ContentPadding)
 
 	s.Sidebar = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgSecondary)).
-		Foreground(lipgloss.Color(FgSecondary)).
+		Background(lipgloss.Color(cfg.Colors.Background.Secondary)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Secondary)).
 		Padding(1).
 		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color(BorderDim))
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.BorderDim))
 
-	// Section styles - full width with proper backgrounds
+	// Section styles - FIXED: consistent full-width backgrounds
+	borderStyle := lipgloss.NormalBorder()
+	var borderSides []bool
+	switch cfg.Formatting.Sections.BorderStyle {
+	case "bottom_only":
+		borderSides = []bool{false, false, true, false} // top, right, bottom, left
+	case "full":
+		borderSides = []bool{true, true, true, true}
+	default:
+		borderSides = []bool{false, false, true, false}
+	}
+
 	s.Section = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgSecondary)).
-		Foreground(lipgloss.Color(FgPrimary)).
-		MarginBottom(1).
-		Padding(1, 2).
-		Border(lipgloss.NormalBorder(), false, false, true, false).
-		BorderForeground(lipgloss.Color(BorderDim))
+		Background(lipgloss.Color(cfg.Colors.Background.Secondary)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Primary)).
+		MarginBottom(cfg.Layout.Spacing.SectionMarginBottom).
+		Padding(cfg.Formatting.Sections.PaddingVertical, cfg.Formatting.Sections.PaddingHorizontal).
+		Border(borderStyle, borderSides...).
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.BorderDim))
 
 	s.SectionFocused = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgAccent)).
-		Foreground(lipgloss.Color(FgPrimary)).
-		MarginBottom(1).
-		Padding(1, 2).
-		Border(lipgloss.ThickBorder(), false, false, true, false).
-		BorderForeground(lipgloss.Color(Focus))
+		Background(lipgloss.Color(cfg.Colors.Background.Selection)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Primary)).
+		MarginBottom(cfg.Layout.Spacing.SectionMarginBottom).
+		Padding(cfg.Formatting.Sections.PaddingVertical, cfg.Formatting.Sections.PaddingHorizontal).
+		Border(lipgloss.ThickBorder(), borderSides...).
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.Focus))
 
 	s.SectionHeader = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgAccent)).
-		Foreground(lipgloss.Color(Yellow)).
-		Bold(true).
-		Padding(0, 2).
+		Background(lipgloss.Color(cfg.Colors.Background.Accent)).
+		Foreground(lipgloss.Color(cfg.Colors.Accent.Yellow)).
+		Bold(cfg.Formatting.Text.BoldHeaders).
+		Padding(0, cfg.Formatting.Sections.PaddingHorizontal).
 		MarginBottom(1)
 
 	s.SectionContent = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgSecondary)).
-		Foreground(lipgloss.Color(FgPrimary)).
-		Padding(0, 2)
+		Background(lipgloss.Color(cfg.Colors.Background.Secondary)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Primary)).
+		Padding(0, cfg.Formatting.Sections.PaddingHorizontal)
 
 	// Menu styles
 	s.Menu = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgFloat)).
-		Foreground(lipgloss.Color(FgPrimary)).
+		Background(lipgloss.Color(cfg.Colors.Background.Floating)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Primary)).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(Border)).
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.Border)).
 		Padding(1).
 		Width(30)
 
 	s.MenuItem = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(FgSecondary)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Secondary)).
 		Padding(0, 1)
 
 	s.MenuItemActive = s.MenuItem.Copy().
-		Background(lipgloss.Color(Focus)).
-		Foreground(lipgloss.Color(BgPrimary)).
+		Background(lipgloss.Color(cfg.Colors.Semantic.Focus)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Inverse)).
 		Bold(true)
 
 	// Text styles
 	s.Title = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Blue)).
-		Bold(true).
+		Foreground(lipgloss.Color(cfg.Colors.Accent.Blue)).
+		Bold(cfg.Formatting.Text.BoldHeaders).
 		MarginBottom(1)
 
 	s.Subtitle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Purple)).
-		Bold(true)
+		Foreground(lipgloss.Color(cfg.Colors.Accent.Purple)).
+		Bold(cfg.Formatting.Text.BoldHeaders)
 
 	s.Body = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(FgPrimary))
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Primary))
 
 	s.Code = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgSecondary)).
-		Foreground(lipgloss.Color(Green)).
+		Background(lipgloss.Color(cfg.Colors.Background.CodeBlock)).
+		Foreground(lipgloss.Color(cfg.Colors.Accent.Green)).
 		Padding(0, 1)
 
 	s.Comment = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(FgComment)).
-		Italic(true)
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Comment)).
+		Italic(cfg.Formatting.Text.ItalicComments)
 
 	s.Highlight = lipgloss.NewStyle().
-		Background(lipgloss.Color(Yellow)).
-		Foreground(lipgloss.Color(BgPrimary)).
+		Background(lipgloss.Color(cfg.Colors.Accent.Yellow)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Inverse)).
 		Bold(true)
 
 	// Status styles
 	s.StatusGood = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Success)).
+		Foreground(lipgloss.Color(cfg.Colors.Semantic.Success)).
 		Bold(true)
 
 	s.StatusWarning = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Warning)).
+		Foreground(lipgloss.Color(cfg.Colors.Semantic.Warning)).
 		Bold(true)
 
 	s.StatusError = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Error)).
+		Foreground(lipgloss.Color(cfg.Colors.Semantic.Error)).
 		Bold(true)
 
 	s.StatusInfo = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Blue)).
+		Foreground(lipgloss.Color(cfg.Colors.Semantic.Info)).
 		Bold(true)
 
 	// Special element styles
 	s.Border = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Border))
+		Foreground(lipgloss.Color(cfg.Colors.Semantic.Border))
 
 	s.Keybind = lipgloss.NewStyle().
-		Background(lipgloss.Color(BgAccent)).
-		Foreground(lipgloss.Color(Orange)).
+		Background(lipgloss.Color(cfg.Colors.Background.Accent)).
+		Foreground(lipgloss.Color(cfg.Colors.Accent.Orange)).
 		Bold(true).
 		Padding(0, 1)
 
 	s.Path = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(Cyan)).
-		Underline(true)
+		Foreground(lipgloss.Color(cfg.Colors.Accent.Cyan)).
+		Underline(cfg.Formatting.Text.UnderlineLinks)
 
 	s.LineNumber = lipgloss.NewStyle().
-		Foreground(lipgloss.Color(FgComment)).
+		Foreground(lipgloss.Color(cfg.Colors.Foreground.Comment)).
 		Width(4).
 		Align(lipgloss.Right)
 
 	// Focus indicators
 	s.FocusedBorder = lipgloss.NewStyle().
 		Border(lipgloss.ThickBorder()).
-		BorderForeground(lipgloss.Color(Focus))
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.Focus))
 
 	s.UnfocusedBorder = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color(BorderDim))
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.BorderDim))
 
 	return s
 }
@@ -256,16 +243,18 @@ func (s *Styles) WithSize(style lipgloss.Style, width, height int) lipgloss.Styl
 
 // Focused returns the focused version of a section style
 func (s *Styles) Focused(style lipgloss.Style) lipgloss.Style {
+	cfg := config.Config
 	return style.Copy().
 		Border(lipgloss.ThickBorder()).
-		BorderForeground(lipgloss.Color(Focus))
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.Focus))
 }
 
 // Unfocused returns the unfocused version of a section style
 func (s *Styles) Unfocused(style lipgloss.Style) lipgloss.Style {
+	cfg := config.Config
 	return style.Copy().
 		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color(BorderDim))
+		BorderForeground(lipgloss.Color(cfg.Colors.Semantic.BorderDim))
 }
 
 // ToggleStatus returns a style based on boolean state

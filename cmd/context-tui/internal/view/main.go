@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/config"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
 )
@@ -186,12 +187,20 @@ func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) str
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format hover content with full width
+	// Format hover content with consistent background
 	content := formatHoverContent(data.Context.Hover, width-4, s)
-	contentPadded := padContentToWidth(content, width-4)
+	
+	// Get background color from config
+	bgColor := config.Config.Colors.Background.Secondary
+	if focused {
+		bgColor = config.Config.Colors.Background.Selection
+	}
+	
+	// Enforce consistent full-width background
+	contentFormatted := enforceConsistentBackground(content, width-4, bgColor)
 
 	// Join and render section with full width
-	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
 	
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
@@ -218,12 +227,20 @@ func renderReferencesSection(width, height int, data *ViewData, s *styles.Styles
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format references list with full width
+	// Format references list with consistent background
 	content := formatReferences(data.Context, width-4, s)
-	contentPadded := padContentToWidth(content, width-4)
+	
+	// Get background color from config
+	bgColor := config.Config.Colors.Background.Secondary
+	if focused {
+		bgColor = config.Config.Colors.Background.Selection
+	}
+	
+	// Enforce consistent full-width background
+	contentFormatted := enforceConsistentBackground(content, width-4, bgColor)
 
 	// Join and render section with full width
-	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
 	
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
@@ -245,7 +262,7 @@ func renderDefinitionSection(width, height int, data *ViewData, s *styles.Styles
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format definition location with full width
+	// Format definition location with consistent background
 	def := data.Context.Definition
 	location := fmt.Sprintf("%s:%d:%d",
 		s.Path.Render(truncateString(def.File, width-10)),
@@ -253,10 +270,17 @@ func renderDefinitionSection(width, height int, data *ViewData, s *styles.Styles
 		def.Col,
 	)
 	
-	contentPadded := padContentToWidth(location, width-4)
+	// Get background color from config
+	bgColor := config.Config.Colors.Background.Secondary
+	if focused {
+		bgColor = config.Config.Colors.Background.Selection
+	}
+	
+	// Enforce consistent full-width background
+	contentFormatted := enforceConsistentBackground(location, width-4, bgColor)
 
 	// Join and render section with full width
-	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
 	
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
@@ -278,7 +302,7 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format type definition location with full width
+	// Format type definition location with consistent background
 	typedef := data.Context.TypeDefinition
 	location := fmt.Sprintf("%s:%d:%d",
 		s.Path.Render(truncateString(typedef.File, width-10)),
@@ -286,10 +310,17 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 		typedef.Col,
 	)
 	
-	contentPadded := padContentToWidth(location, width-4)
+	// Get background color from config
+	bgColor := config.Config.Colors.Background.Secondary
+	if focused {
+		bgColor = config.Config.Colors.Background.Selection
+	}
+	
+	// Enforce consistent full-width background
+	contentFormatted := enforceConsistentBackground(location, width-4, bgColor)
 
 	// Join and render section with full width
-	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentPadded)
+	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
 	
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
@@ -513,19 +544,48 @@ func max(a, b int) int {
 	return b
 }
 
-// padContentToWidth ensures each line in content extends to full width with background
-func padContentToWidth(content string, width int) string {
-	lines := strings.Split(content, "\n")
-	var paddedLines []string
-	
-	for _, line := range lines {
-		lineWidth := lipgloss.Width(line)
-		padding := max(0, width-lineWidth)
-		paddedLine := line + strings.Repeat(" ", padding)
-		paddedLines = append(paddedLines, paddedLine)
+// enforceConsistentBackground ensures EVERY line has consistent full-width background
+func enforceConsistentBackground(content string, width int, bgColor string) string {
+	if config.Config == nil || !config.Config.Formatting.Sections.ConsistentBackgrounds {
+		return content
 	}
 	
-	return strings.Join(paddedLines, "\n")
+	lines := strings.Split(content, "\n")
+	var processedLines []string
+	
+	// Background style for consistent formatting
+	bgStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color(bgColor)).
+		Width(width)
+	
+	for _, line := range lines {
+		// Strip any existing styling that might interfere
+		cleanLine := stripANSI(line)
+		// Apply consistent background to full width
+		styledLine := bgStyle.Render(cleanLine)
+		processedLines = append(processedLines, styledLine)
+	}
+	
+	return strings.Join(processedLines, "\n")
+}
+
+// stripANSI removes ANSI escape sequences to get clean text
+func stripANSI(s string) string {
+	// Simple ANSI stripping - removes common escape sequences
+	cleaned := s
+	// Remove color codes, styles, etc.
+	for strings.Contains(cleaned, "\x1b[") {
+		start := strings.Index(cleaned, "\x1b[")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(cleaned[start:], "m")
+		if end == -1 {
+			break
+		}
+		cleaned = cleaned[:start] + cleaned[start+end+1:]
+	}
+	return cleaned
 }
 
 // isMarkdownContent detects if content contains markdown formatting
@@ -568,21 +628,29 @@ func isMarkdownContent(content []string) bool {
 	return float64(markdownIndicators) / float64(totalLines) >= 0.25
 }
 
-// renderMarkdown uses glamour to render markdown content with custom styling
+// renderMarkdown uses glamour to render markdown content with centralized styling
 func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
-	// Use built-in styles that work well with dark terminals
-	var style string
-	if darkTheme {
-		style = "dark"
-	} else {
-		style = "light"
+	// Use centralized markdown configuration
+	if config.Config == nil || !config.Config.Markdown.UseGlamour {
+		return content, nil
+	}
+	
+	// Use configured theme
+	style := config.Config.Markdown.Theme
+	if style == "" {
+		style = "dark" // fallback
 	}
 
-	renderer, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(style),
-		glamour.WithWordWrap(width),
-		glamour.WithEmoji(),
-	)
+	var options []glamour.TermRendererOption
+	options = append(options, glamour.WithStandardStyle(style))
+	
+	if config.Config.Markdown.WordWrap {
+		options = append(options, glamour.WithWordWrap(width))
+	}
+	
+	options = append(options, glamour.WithEmoji())
+
+	renderer, err := glamour.NewTermRenderer(options...)
 	if err != nil {
 		return content, err
 	}
