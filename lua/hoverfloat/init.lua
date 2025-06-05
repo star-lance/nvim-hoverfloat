@@ -54,6 +54,8 @@ local state = {
   binary_path = nil,
   -- Only cache the last message sent to prevent duplicate sends
   last_sent_hash = nil,
+  -- Prevent overlapping LSP collection calls
+  lsp_collection_in_progress = false,
 }
 
 -- Helper function to find TUI binary
@@ -199,11 +201,20 @@ end
 
 -- Check if we should update context - now much simpler, just basic checks
 local function should_update_context()
-  if not state.plugin_enabled then return false end
-  if not has_lsp_clients() then return false end
-  if should_skip_update() then return false end
+  if not state.plugin_enabled then 
+    vim.notify("[HoverFloat] Skipped: plugin disabled", vim.log.levels.DEBUG)
+    return false 
+  end
+  if not has_lsp_clients() then 
+    vim.notify("[HoverFloat] Skipped: no LSP clients", vim.log.levels.DEBUG)
+    return false 
+  end
+  if should_skip_update() then 
+    vim.notify("[HoverFloat] Skipped: excluded filetype " .. vim.bo.filetype, vim.log.levels.DEBUG)
+    return false 
+  end
   
-  -- Always proceed to check actual content - no aggressive pre-filtering
+  vim.notify("[HoverFloat] Proceeding to collect LSP data", vim.log.levels.DEBUG)
   return true
 end
 
@@ -213,20 +224,44 @@ local function update_context()
     return
   end
 
+  -- Prevent overlapping LSP collection calls that can cause race conditions
+  if state.lsp_collection_in_progress then
+    vim.notify("[HoverFloat] Skipped: LSP collection already in progress", vim.log.levels.DEBUG)
+    return
+  end
+
+  local cursor_pos = vim.api.nvim_win_get_cursor(0)
+  local current_word = vim.fn.expand('<cword>')
+  
+  vim.notify(string.format("[HoverFloat] Collecting LSP at %d:%d (word: '%s')", 
+    cursor_pos[1], cursor_pos[2], current_word), vim.log.levels.DEBUG)
+
+  state.lsp_collection_in_progress = true
+
   -- Always collect LSP context information 
   lsp_collector.gather_context_info(function(context_data)
+    state.lsp_collection_in_progress = false
+    
     if not context_data then
+      vim.notify("[HoverFloat] No context data received from LSP", vim.log.levels.DEBUG)
       return
     end
     
     -- Generate hash of the new context data
     local new_hash = hash_context_data(context_data)
+    local short_hash = new_hash and new_hash:sub(1, 8) or "nil"
+    local last_short_hash = state.last_sent_hash and state.last_sent_hash:sub(1, 8) or "nil"
     
     -- Only skip if this is EXACTLY the same as the last message we sent
     if new_hash ~= state.last_sent_hash then
       -- Content is different from last sent message, send update
+      vim.notify(string.format("[HoverFloat] Sending update (hash: %s, prev: %s)", 
+        short_hash, last_short_hash), vim.log.levels.DEBUG)
       state.last_sent_hash = new_hash
       socket_client.send_context_update(context_data)
+    else
+      vim.notify(string.format("[HoverFloat] Skipped duplicate (hash: %s)", 
+        short_hash), vim.log.levels.DEBUG)
     end
   end, state.config.features)
 end
@@ -493,6 +528,7 @@ M.get_status = function()
     config = state.config,
     -- Only track last sent message hash
     last_sent_hash = state.last_sent_hash,
+    lsp_collection_in_progress = state.lsp_collection_in_progress,
     lsp_cache_stats = lsp_collector.get_cache_stats(),
   }
 end
@@ -514,6 +550,7 @@ end
 -- Clear content cache (useful for debugging or forcing updates)
 M.clear_content_cache = function()
   state.last_sent_hash = nil
+  state.lsp_collection_in_progress = false
   lsp_collector.clear_cache()
   vim.notify("Content cache cleared", vim.log.levels.INFO)
 end
