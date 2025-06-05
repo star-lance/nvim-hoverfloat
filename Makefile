@@ -22,11 +22,29 @@ build:
 	@cd cmd/context-tui && go build $(GO_BUILD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) .
 	@echo "✅ Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
-# Install binary to user's local bin
+# Install binary to user's local bin (automatically stops running processes)
 install: build
 	@echo "📦 Installing $(BINARY_NAME) to $(INSTALL_DIR)..."
 	@mkdir -p $(INSTALL_DIR)
-	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/
+	@if [ -f "$(INSTALL_DIR)/$(BINARY_NAME)" ]; then \
+		echo "🔄 Gracefully stopping $(BINARY_NAME) processes..."; \
+		pgrep -f "^$(INSTALL_DIR)/$(BINARY_NAME)" | head -10 | xargs -r kill -TERM 2>/dev/null || true; \
+		sleep 1; \
+		pgrep -f "^$(INSTALL_DIR)/$(BINARY_NAME)" | head -10 | xargs -r kill -KILL 2>/dev/null || true; \
+		sleep 1; \
+	fi
+	@for i in 1 2 3; do \
+		if cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME).tmp 2>/dev/null; then \
+			mv $(INSTALL_DIR)/$(BINARY_NAME).tmp $(INSTALL_DIR)/$(BINARY_NAME) && break; \
+		else \
+			echo "⚠️  Binary still in use, waiting (attempt $$i/3)..."; \
+			if [ $$i -eq 3 ]; then \
+				echo "❌ Failed to install after 3 attempts. Please manually stop $(BINARY_NAME) processes and retry."; \
+				exit 1; \
+			fi; \
+			sleep 2; \
+		fi; \
+	done
 	@chmod +x $(INSTALL_DIR)/$(BINARY_NAME)
 	@echo "✅ Installed to $(INSTALL_DIR)/$(BINARY_NAME)"
 	@echo "💡 Make sure $(INSTALL_DIR) is in your PATH"
