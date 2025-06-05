@@ -106,15 +106,18 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Context = (*Context)(msg.Data)
 		m.LastUpdate = time.Now()
 		m.ErrorMsg = ""
-		return m, nil
+		// Continue listening for more messages
+		return m, m.listenForMessages()
 
 	case socket.ErrorMsg:
 		m.ErrorMsg = string(msg)
-		return m, nil
+		// Continue listening for more messages
+		return m, m.listenForMessages()
 
 	case socket.ConnectionMsg:
 		m.connected = bool(msg)
-		return m, nil
+		// Start listening for messages now that socket is connected
+		return m, m.listenForMessages()
 
 	default:
 		return m, nil
@@ -322,43 +325,60 @@ func (m *App) startSocketServer() tea.Cmd {
 
 		m.socketListener = listener
 
-		// Start accepting connections in goroutine
-		go m.acceptConnections()
-
 		return socket.ConnectionMsg(true)
 	}
 }
 
-// acceptConnections handles incoming socket connections
-func (m *App) acceptConnections() {
-	for {
-		conn, err := m.socketListener.Accept()
-		if err != nil {
-			// Socket likely closed, exit gracefully
-			return
+// listenForMessages returns a command that listens for incoming socket messages
+func (m *App) listenForMessages() tea.Cmd {
+	return func() tea.Msg {
+		if m.socketListener == nil {
+			return nil
 		}
 
-		// Handle connection in separate goroutine
-		go m.handleConnection(conn)
+		conn, err := m.socketListener.Accept()
+		if err != nil {
+			return socket.ErrorMsg("Socket connection failed")
+		}
+
+		// Handle this connection and return the first message
+		decoder := json.NewDecoder(conn)
+		var msg socket.Message
+		if err := decoder.Decode(&msg); err != nil {
+			conn.Close()
+			return socket.ErrorMsg("Failed to decode message")
+		}
+
+		// Start a goroutine to handle remaining messages from this connection
+		go m.handleRemainingMessages(conn, decoder)
+
+		// Return the first message to the main program
+		if msg.Type == "context_update" {
+			return socket.ContextUpdateMsg{Data: (*socket.ContextData)(&msg.Data)}
+		}
+
+		return nil
 	}
 }
 
-// handleConnection processes data from a socket connection
-func (m *App) handleConnection(conn net.Conn) {
+// handleRemainingMessages processes subsequent messages from a connection
+func (m *App) handleRemainingMessages(conn net.Conn, decoder *json.Decoder) {
 	defer conn.Close()
-
-	decoder := json.NewDecoder(conn)
+	
 	for {
 		var msg socket.Message
 		if err := decoder.Decode(&msg); err != nil {
 			return // Connection closed or invalid data
 		}
 
-		// Send update to main program
+		// For remaining messages, we need to send them through a different mechanism
+		// Since we can't easily send to the main program from here, we'll use a channel
 		if msg.Type == "context_update" {
-			// Convert to our internal format
-			program := tea.NewProgram(nil) // This is a hack - we need a better way
-			program.Send(socket.ContextUpdateMsg{Data: (*socket.ContextData)(&msg.Data)})
+			// Store in the app instance for the next update cycle to pick up
+			m.Context = (*Context)(&msg.Data)
+			m.LastUpdate = time.Now()
+			m.ErrorMsg = ""
 		}
 	}
 }
+
