@@ -1,12 +1,11 @@
 # Makefile for nvim-hoverfloat
 
-.PHONY: build install clean dev test dev-build dev-test lint format help
+.PHONY: build install clean lint format help
 
 # Configuration
 BINARY_NAME := nvim-context-tui
 BUILD_DIR := build
 INSTALL_DIR := $(HOME)/.local/bin
-DEV_BIN_DIR := dev/bin
 
 # Go build flags
 GO_BUILD_FLAGS := -ldflags="-s -w" -trimpath
@@ -49,46 +48,15 @@ install: build
 	@echo "✅ Installed to $(INSTALL_DIR)/$(BINARY_NAME)"
 	@echo "💡 Make sure $(INSTALL_DIR) is in your PATH"
 
-# Install for development (symlink to avoid rebuilding)
-install-dev: build
-	@echo "🔗 Creating development symlink..."
-	@mkdir -p $(INSTALL_DIR)
-	@ln -sf $(PWD)/$(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	@echo "✅ Development symlink created"
-
-# Build development tools
-dev-build:
-	@echo "🛠️  Building development tools..."
-	@./dev/scripts/build.sh
-
-# Development environment
-dev: dev-build
-	@echo "🚀 Starting development environment..."
-	@./dev/scripts/interactive-test.sh
-
-# Run all tests
-test:
-	@echo "🧪 Running tests..."
-	@cd cmd/context-tui && go test -v ./...
-	@cd dev/mock-nvim-client && go test -v ./...
-	@echo "✅ All tests passed"
-
-# Run development tests
-dev-test: dev-build
-	@echo "🧪 Running development tests..."
-	@./dev/scripts/test-full-pipeline.sh
-
 # Lint Go code
 lint:
 	@echo "🔍 Linting Go code..."
 	@if command -v golangci-lint >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/golangci-lint" ]; then \
 		LINTER=$$(command -v golangci-lint || echo "$(HOME)/go/bin/golangci-lint"); \
 		(cd cmd/context-tui && $$LINTER run ./... || true); \
-		(cd dev/mock-nvim-client && $$LINTER run . || true); \
 	else \
 		echo "⚠️  golangci-lint not found, using go vet"; \
 		(cd cmd/context-tui && go vet ./...); \
-		(cd dev/mock-nvim-client && go vet .); \
 	fi
 	@echo "✅ Linting complete"
 
@@ -96,10 +64,8 @@ lint:
 format:
 	@echo "🎨 Formatting Go code..."
 	@gofmt -s -w ./cmd/context-tui/
-	@gofmt -s -w ./dev/mock-nvim-client/
 	@if command -v goimports >/dev/null 2>&1; then \
 		goimports -w ./cmd/context-tui/; \
-		goimports -w ./dev/mock-nvim-client/; \
 	fi
 	@echo "✅ Formatting complete"
 
@@ -107,8 +73,6 @@ format:
 clean:
 	@echo "🧹 Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
-	@rm -rf $(DEV_BIN_DIR)
-	@./dev/scripts/clean.sh
 	@echo "✅ Clean complete"
 
 # Clean and rebuild everything
@@ -126,16 +90,12 @@ check-go:
 mod-tidy:
 	@echo "📦 Tidying Go modules..."
 	@cd cmd/context-tui && go mod tidy
-	@cd dev/mock-nvim-client && go mod tidy
-	@cd dev/context-tui && go mod tidy
 	@echo "✅ Modules tidied"
 
 # Download dependencies
 deps:
 	@echo "📥 Downloading dependencies..."
 	@cd cmd/context-tui && go mod download
-	@cd dev/mock-nvim-client && go mod download
-	@cd dev/context-tui && go mod download
 	@echo "✅ Dependencies downloaded"
 
 # Build for multiple platforms
@@ -169,14 +129,6 @@ package: build-all
 	
 	@echo "✅ Release packages created in $(BUILD_DIR)/releases/"
 
-# Quick development cycle
-quick: format lint build
-	@echo "✅ Quick development cycle complete"
-
-# Full development cycle
-full: clean deps format lint test build
-	@echo "✅ Full development cycle complete"
-
 # Check if required tools are installed
 check-tools:
 	@echo "🔧 Checking required tools..."
@@ -199,21 +151,13 @@ help:
 	@echo "Production targets:"
 	@echo "  build          Build the TUI binary"
 	@echo "  install        Install binary to ~/.local/bin"
-	@echo "  install-dev    Create development symlink"
 	@echo "  clean          Clean build artifacts"
 	@echo "  rebuild        Clean and rebuild"
-	@echo ""
-	@echo "Development targets:"
-	@echo "  dev            Start interactive development session"
-	@echo "  dev-build      Build development tools"
-	@echo "  dev-test       Run development pipeline test"
 	@echo ""
 	@echo "Quality targets:"
 	@echo "  test           Run all tests"
 	@echo "  lint           Lint Go code"
 	@echo "  format         Format Go code"
-	@echo "  quick          Format + lint + build"
-	@echo "  full           Full development cycle"
 	@echo ""
 	@echo "Release targets:"
 	@echo "  build-all      Build for multiple platforms"

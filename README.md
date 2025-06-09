@@ -1,18 +1,12 @@
 # nvim-hoverfloat
 
-Interactive LSP context window for Neovim with real-time hover information, references, and definitions.
-
-![Demo](https://your-screenshot-link-if-you-have-one)
-
 ## Features
 
-- 🔍 **Real-time LSP context** - Hover info, references, and definitions update as you move the cursor
-- 🎮 **Interactive TUI** - Navigate with hjkl keys, toggle sections on/off  
-- 🎨 **Beautiful styling** - Tokyo Night theme matching your Neovim setup
-- ⚡ **High performance** - Built with Go and Bubble Tea for responsiveness
-- 🔌 **Seamless integration** - Works with any LSP server supported by Neovim
-- 📱 **Separate window** - Runs in dedicated terminal window, won't disrupt your workflow
-
+Real-time LSP context - Hover info, references, and definitions update as you move the cursor
+- Interactive TUI - Navigate with hjkl keys, toggle sections on/off
+- High performance - Built for performance with go
+- Seamless integration - Works with any LSP server that can integrate with Neovim
+- Separate window - dedicated terminal window with configurable launch parameters
 ## Installation
 
 ### Using lazy.nvim (Recommended)
@@ -20,14 +14,16 @@ Interactive LSP context window for Neovim with real-time hover information, refe
 ```lua
 {
   "star-lance/nvim-hoverfloat",
-  build = "make install", -- Builds and installs the TUI binary
+  build = "make install",
   config = function()
     require("hoverfloat").setup({
-      -- Your configuration here (optional)
+      -- Your configuration here
     })
   end,
 }
+
 ```
+for transparency, I have not actually tested any of these except for Lazy because I am lazy. If you use one of the below package managers and it does not work correctly, please either let me know and I will get off may ass and spend the 10 minutes it will take to install another plugin manager and fix it, or submit a PR. I will approve pretty much anything that's not malware if it fixes a bug, although I might revisit it later and change some elements.
 
 ### Using packer.nvim
 
@@ -61,10 +57,10 @@ use {
 
 ## Requirements
 
-- **Neovim 0.8+** with LSP support
-- **Go 1.21+** (for building)
-- **Terminal emulator** - kitty (default), or any terminal that supports spawning windows
-- **LSP servers** - Any LSP server configured in Neovim
+- Neovim 0.8+ with LSP support
+- Go 1.21+ (for building)
+- Terminal emulator - kitty (default), or any terminal that supports spawning windows
+- LSP servers - Any LSP server configured in Neovim
 
 ## Usage
 
@@ -114,20 +110,20 @@ require("hoverfloat").setup({
   -- TUI settings
   tui = {
     binary_name = "nvim-context-tui",
-    binary_path = nil, -- Auto-detect or specify path
+    binary_path = nil,
     window_title = "LSP Context",
     window_size = { width = 80, height = 25 },
-    terminal_cmd = "kitty", -- Terminal to spawn TUI in
+    terminal_cmd = "kitty",
   },
-  
+ 
   -- Communication settings
   communication = {
     socket_path = "/tmp/nvim_context.sock",
     timeout = 5000,
     retry_attempts = 3,
-    update_delay = 150, -- Debounce delay in milliseconds
+    update_delay = 150,
   },
-  
+ 
   -- LSP feature toggles
   features = {
     show_hover = true,
@@ -137,13 +133,13 @@ require("hoverfloat").setup({
     max_hover_lines = 15,
     max_references = 8,
   },
-  
+ 
   -- Cursor tracking settings
   tracking = {
     excluded_filetypes = { "help", "qf", "netrw", "fugitive", "TelescopePrompt" },
     min_cursor_movement = 3, -- Minimum column movement to trigger update
   },
-  
+ 
   -- Auto-start settings
   auto_start = true,
   auto_restart_on_error = true,
@@ -152,7 +148,7 @@ require("hoverfloat").setup({
 
 ### Terminal Configuration
 
-The plugin works best with **kitty** terminal. Example configurations are provided in the `examples/` directory:
+The plugin works best with kitty terminal. Example configurations are provided in the `examples/` directory:
 
 - `examples/kitty_context.conf` - Kitty terminal configuration
 - `examples/hyprland_rules.conf` - Hyprland window manager rules
@@ -164,7 +160,7 @@ To use a different terminal:
 ```lua
 require("hoverfloat").setup({
   tui = {
-    terminal_cmd = "alacritty", -- or "wezterm", "gnome-terminal", etc.
+    terminal_cmd = "alacritty",
   }
 })
 ```
@@ -228,7 +224,7 @@ Run the health check to diagnose issues:
 
 ### Common Issues
 
-**TUI binary not found:**
+TUI binary not found:
 ```bash
 # Rebuild and reinstall
 make clean && make install
@@ -237,7 +233,7 @@ make clean && make install
 require("hoverfloat").set_binary_path("/path/to/nvim-context-tui")
 ```
 
-**Socket connection issues:**
+Socket connection issues:
 ```bash
 # Check if socket exists
 ls -la /tmp/nvim_context.sock
@@ -246,7 +242,7 @@ ls -la /tmp/nvim_context.sock
 :ContextWindow restart
 ```
 
-**LSP not working:**
+LSP not working:
 ```vim
 # Check LSP status
 :LspInfo
@@ -286,43 +282,24 @@ require("hoverfloat").setup({
 
 ### Components
 
-- **Lua Plugin** - Integrates with Neovim, collects LSP data, manages TUI process
-- **Go TUI** - Interactive terminal interface built with Bubble Tea
-- **Unix Socket** - High-performance IPC between Lua and Go processes
-- **Development Framework** - Mock client and testing tools for development
+- Lua Plugin - Integrates with Neovim, collects LSP data, manages TUI process
+- Go TUI - Interactive terminal interface built with Bubble Tea
+- Unix Socket - High-performance IPC between Lua and Go processes
+- Development Framework - Mock client and testing tools for development
 
 ## Performance
 
-- **Sub-100ms latency** for context updates
-- **Efficient caching** of LSP responses to reduce server load  
-- **Debounced updates** to prevent excessive requests
-- **Minimal memory footprint** (~5MB typical usage)
-
-## Supported LSP Features
-
-- ✅ **textDocument/hover** - Documentation and type information
-- ✅ **textDocument/definition** - Go to definition
-- ✅ **textDocument/references** - Find all references  
-- ✅ **textDocument/typeDefinition** - Go to type definition
-- 🔄 **Diagnostics** (planned)
-- 🔄 **Code actions** (planned)
+- under 1ms latency for context updates
+- Efficient caching of LSP responses to reduce server load  
+- Debouncing to improve performance
+- Minimal memory footprint (~5MB typical usage)
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License - [LICENSE](LICENSE)
 
-## Acknowledgments
+## Stack
 
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - Excellent TUI framework
 - [Lip Gloss](https://github.com/charmbracelet/lipgloss) - Beautiful terminal styling
-- [Tokyo Night](https://github.com/folke/tokyonight.nvim) - Color scheme inspiration
-
-## Related Projects
-
-- [lspsaga.nvim](https://github.com/nvimdev/lspsaga.nvim) - LSP UI improvements
-- [trouble.nvim](https://github.com/folke/trouble.nvim) - Pretty diagnostics list
-- [aerial.nvim](https://github.com/stevearc/aerial.nvim) - Code outline window
-
 ---
-
-**Star** ⭐ this repository if you find it useful!
