@@ -48,13 +48,55 @@ local function get_reconnect_delay()
   return delay
 end
 
--- Log connection events
+-- Enhanced logging functions
 local function log_connection_event(event, details)
-  if vim.g.hoverfloat_debug then
-    vim.schedule(function()
-      vim.notify(string.format("[HoverFloat] %s: %s", event, details or ""), vim.log.levels.DEBUG)
-    end)
+  local timestamp = os.date("%H:%M:%S")
+  local log_msg = string.format("[HoverFloat Socket %s] %s", timestamp, event)
+  if details then
+    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
   end
+  
+  vim.schedule(function()
+    if config.debug then
+      vim.notify(log_msg, vim.log.levels.DEBUG)
+    end
+  end)
+end
+
+local function log_error(event, details)
+  local timestamp = os.date("%H:%M:%S")
+  local log_msg = string.format("[HoverFloat Socket %s] ERROR: %s", timestamp, event)
+  if details then
+    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
+  end
+  
+  vim.schedule(function()
+    vim.notify(log_msg, vim.log.levels.ERROR)
+  end)
+end
+
+local function log_warn(event, details)
+  local timestamp = os.date("%H:%M:%S")
+  local log_msg = string.format("[HoverFloat Socket %s] WARN: %s", timestamp, event)
+  if details then
+    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
+  end
+  
+  vim.schedule(function()
+    vim.notify(log_msg, vim.log.levels.WARN)
+  end)
+end
+
+local function log_info(event, details)
+  local timestamp = os.date("%H:%M:%S")
+  local log_msg = string.format("[HoverFloat Socket %s] %s", timestamp, event)
+  if details then
+    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
+  end
+  
+  vim.schedule(function()
+    vim.notify(log_msg, vim.log.levels.INFO)
+  end)
 end
 
 -- Clean up connection resources
@@ -94,12 +136,21 @@ end
 
 -- Handle connection failure
 local function handle_connection_failure(reason)
-  log_connection_event("Connection failed", reason)
+  log_error("Connection failed", {
+    reason = reason,
+    attempt = state.connection_attempts + 1,
+    max_attempts = config.max_connection_attempts,
+    socket_path = state.socket_path
+  })
   cleanup_connection()
 
   state.connection_attempts = state.connection_attempts + 1
 
   if state.connection_attempts >= config.max_connection_attempts then
+    log_error("Max connection attempts reached", {
+      attempts = state.connection_attempts,
+      giving_up = true
+    })
     vim.schedule(function()
       vim.notify("HoverFloat: Max connection attempts reached. Stopping reconnection.", vim.log.levels.ERROR)
     end)
@@ -120,8 +171,11 @@ function schedule_reconnect()
   end
 
   local delay = get_reconnect_delay()
-  log_connection_event("Scheduling reconnect",
-    string.format("in %dms (attempt %d)", delay, state.connection_attempts + 1))
+  log_info("Scheduling reconnection", {
+    delay_ms = delay,
+    attempt = state.connection_attempts + 1,
+    max_attempts = config.max_connection_attempts
+  })
 
   vim.schedule(function()
     state.reconnect_timer = vim.fn.timer_start(delay, function()
@@ -156,29 +210,40 @@ end
 local function handle_message(json_str)
   local ok, message = pcall(vim.json.decode, json_str)
   if not ok then
-    log_connection_event("Parse error", "Invalid JSON: " .. json_str:sub(1, 100))
+    log_error("Message parse error", {
+      error = message,
+      json_preview = json_str:sub(1, 100) .. (json_str:len() > 100 and "..." or "")
+    })
     return
   end
 
-  log_connection_event("Received message", message.type)
+  log_connection_event("Received message", {
+    type = message.type,
+    timestamp = message.timestamp,
+    has_data = message.data ~= nil
+  })
 
   -- Handle different message types
   if message.type == "pong" then
     state.last_heartbeat_received = vim.uv.now()
-    log_connection_event("Heartbeat", "Pong received")
+    local latency = state.last_heartbeat_received - state.last_heartbeat_sent
+    log_connection_event("Heartbeat pong received", {
+      latency_ms = latency,
+      client_timestamp = message.client_timestamp
+    })
   elseif message.type == "error" then
     local error_msg = "Unknown error"
     if message.data and message.data.error then
       error_msg = message.data.error
     end
+    log_error("TUI reported error", error_msg)
     vim.schedule(function()
       vim.notify("HoverFloat TUI Error: " .. error_msg, vim.log.levels.ERROR)
     end)
   elseif message.type == "status" then
-    -- Handle status updates from TUI
-    log_connection_event("Status update", vim.inspect(message.data))
+    log_connection_event("Status update from TUI", message.data)
   else
-    log_connection_event("Unknown message type", message.type)
+    log_warn("Unknown message type received", message.type)
   end
 end
 
@@ -188,13 +253,21 @@ local function send_raw_message(json_message)
     -- Queue message for later
     if #state.message_queue < config.max_queue_size then
       table.insert(state.message_queue, json_message)
-      log_connection_event("Message queued", string.format("Queue size: %d", #state.message_queue))
+      log_connection_event("Message queued", {
+        queue_size = #state.message_queue,
+        max_size = config.max_queue_size,
+        connected = state.connected
+      })
     else
-      log_connection_event("Queue full", "Dropping message")
+      log_warn("Message queue full, dropping message", {
+        queue_size = #state.message_queue,
+        max_size = config.max_queue_size
+      })
     end
 
     -- Try to connect if not already connecting
     if not state.connecting then
+      log_connection_event("Auto-connecting due to queued message")
       create_connection()
     end
     return false
@@ -203,13 +276,15 @@ local function send_raw_message(json_message)
   -- Send immediately
   local ok = state.socket:write(json_message, function(err)
     if err then
-      log_connection_event("Write error", err)
+      log_error("Socket write error", err)
       handle_connection_failure("Write failed: " .. err)
+    else
+      log_connection_event("Message sent successfully")
     end
   end)
 
   if not ok then
-    log_connection_event("Write failed", "Socket write returned false")
+    log_error("Socket write failed immediately")
     handle_connection_failure("Socket write failed")
     return false
   end
@@ -250,10 +325,16 @@ local function start_heartbeat()
     end)
   end
 
+  log_connection_event("Starting heartbeat", {
+    interval_ms = config.heartbeat_interval,
+    timeout_ms = config.heartbeat_timeout
+  })
+
   -- Use vim.schedule to avoid fast event context issues
   vim.schedule(function()
     state.heartbeat_timer = vim.fn.timer_start(config.heartbeat_interval, function()
       if not state.connected then
+        log_connection_event("Heartbeat skipped - not connected")
         return
       end
 
@@ -262,7 +343,12 @@ local function start_heartbeat()
       if state.last_heartbeat_received > 0 then
         local time_since_last_heartbeat = now - state.last_heartbeat_received
         if time_since_last_heartbeat > config.heartbeat_timeout then
-          log_connection_event("Heartbeat timeout", string.format("No pong for %dms", time_since_last_heartbeat))
+          log_error("Heartbeat timeout detected", {
+            timeout_ms = config.heartbeat_timeout,
+            time_since_last_ms = time_since_last_heartbeat,
+            last_sent = state.last_heartbeat_sent,
+            last_received = state.last_heartbeat_received
+          })
           handle_connection_failure("Heartbeat timeout")
           return
         end
@@ -272,7 +358,9 @@ local function start_heartbeat()
       local ping_msg = create_message("ping", { timestamp = now })
       if send_raw_message(ping_msg) then
         state.last_heartbeat_sent = now
-        log_connection_event("Heartbeat", "Ping sent")
+        log_connection_event("Heartbeat ping sent", { timestamp = now })
+      else
+        log_warn("Failed to send heartbeat ping")
       end
     end, { ['repeat'] = -1 })
   end)
@@ -293,10 +381,19 @@ end
 -- Create persistent connection
 function create_connection()
   if state.connecting or state.connected then
+    log_connection_event("Connection already in progress or established", {
+      connecting = state.connecting,
+      connected = state.connected
+    })
     return
   end
 
-  log_connection_event("Connecting", string.format("Attempt %d to %s", state.connection_attempts + 1, state.socket_path))
+  log_info("Starting connection attempt", {
+    attempt = state.connection_attempts + 1,
+    max_attempts = config.max_connection_attempts,
+    socket_path = state.socket_path
+  })
+  
   state.connecting = true
 
   local socket = uv.new_pipe(false)
@@ -309,7 +406,10 @@ function create_connection()
   local timeout_timer
   vim.schedule(function()
     timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
-      log_connection_event("Connection timeout", string.format("After %dms", config.connection_timeout))
+      log_error("Connection timeout", {
+        timeout_ms = config.connection_timeout,
+        attempt = state.connection_attempts + 1
+      })
       if socket and not socket:is_closing() then
         socket:close()
       end
@@ -328,6 +428,11 @@ function create_connection()
     end
 
     if err then
+      log_error("Connection failed", {
+        error = err,
+        socket_path = state.socket_path,
+        attempt = state.connection_attempts + 1
+      })
       socket:close()
       handle_connection_failure("Connection failed: " .. err)
       return
@@ -340,20 +445,28 @@ function create_connection()
     state.connection_attempts = 0 -- Reset attempts counter
     state.incoming_buffer = ""
 
-    log_connection_event("Connected", "Successfully connected to TUI")
+    log_info("Socket connection established", {
+      socket_path = state.socket_path,
+      attempts_required = state.connection_attempts
+    })
 
     -- Set up read handler
     socket:read_start(function(read_err, data)
       if read_err then
+        log_error("Socket read error", read_err)
         handle_connection_failure("Read error: " .. read_err)
         return
       end
 
       if data then
+        log_connection_event("Data received", {
+          bytes = #data,
+          preview = data:sub(1, 50) .. (data:len() > 50 and "..." or "")
+        })
         handle_incoming_data(data)
       else
         -- EOF - connection closed by server
-        log_connection_event("Disconnected", "EOF received")
+        log_warn("Connection closed by server", "EOF received")
         handle_connection_failure("Connection closed by server")
       end
     end)
@@ -390,15 +503,19 @@ end
 
 function M.connect(socket_path)
   if socket_path then
+    log_connection_event("Socket path updated", {
+      old_path = state.socket_path,
+      new_path = socket_path
+    })
     state.socket_path = socket_path
   end
 
-  log_connection_event("Connect requested", state.socket_path)
+  log_info("Connection requested", { socket_path = state.socket_path })
   create_connection()
 end
 
 function M.disconnect()
-  log_connection_event("Disconnect requested", "")
+  log_info("Disconnect requested")
 
   -- Cancel reconnection
   if state.reconnect_timer then
@@ -406,6 +523,7 @@ function M.disconnect()
       if state.reconnect_timer then
         vim.fn.timer_stop(state.reconnect_timer)
         state.reconnect_timer = nil
+        log_connection_event("Reconnection timer cancelled")
       end
     end)
   end
@@ -415,6 +533,7 @@ function M.disconnect()
 
   -- Send clean disconnect message if connected
   if state.connected and state.socket then
+    log_connection_event("Sending disconnect message to TUI")
     local disconnect_msg = create_message("disconnect", {})
     send_raw_message(disconnect_msg)
 
@@ -427,8 +546,14 @@ function M.disconnect()
   end
 
   -- Clear message queue
+  local queue_size = #state.message_queue
   state.message_queue = {}
   state.connection_attempts = 0
+
+  log_info("Disconnected successfully", {
+    cleared_queue_messages = queue_size,
+    reset_attempts = true
+  })
 
   vim.schedule(function()
     vim.notify("HoverFloat: Disconnected from context window", vim.log.levels.INFO)
@@ -436,6 +561,12 @@ function M.disconnect()
 end
 
 function M.send_context_update(context_data)
+  log_connection_event("Sending context update", {
+    has_hover = context_data.hover and #context_data.hover > 0,
+    has_definition = context_data.definition ~= nil,
+    references_count = context_data.references_count or 0,
+    connected = state.connected
+  })
   local message = create_message("context_update", context_data)
   return send_raw_message(message)
 end

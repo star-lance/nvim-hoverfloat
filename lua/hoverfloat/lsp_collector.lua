@@ -1,5 +1,33 @@
--- lua/hoverfloat/lsp_collector.lua - LSP data collection and formatting
+-- lua/hoverfloat/lsp_collector.lua - LSP data collection with enhanced logging
 local M = {}
+
+-- Logging helpers
+local function log(level, message, details)
+  local timestamp = os.date("%H:%M:%S")
+  local log_msg = string.format("[HoverFloat LSP %s] %s", timestamp, message)
+  if details then
+    log_msg = log_msg .. ": " .. vim.inspect(details)
+  end
+  vim.notify(log_msg, level)
+end
+
+local function log_debug(message, details)
+  if vim.g.hoverfloat_debug then
+    log(vim.log.levels.DEBUG, message, details)
+  end
+end
+
+local function log_info(message, details)
+  log(vim.log.levels.INFO, message, details)
+end
+
+local function log_warn(message, details)
+  log(vim.log.levels.WARN, message, details)
+end
+
+local function log_error(message, details)
+  log(vim.log.levels.ERROR, message, details)
+end
 
 local cache = {
   data = {},
@@ -13,8 +41,10 @@ end
 local function get_cached_result(key)
   local entry = cache.data[key]
   if entry and (vim.uv.now() - entry.timestamp) < cache.ttl then
+    log_debug("Cache hit", { key = key })
     return entry.result
   end
+  log_debug("Cache miss", { key = key })
   return nil
 end
 
@@ -23,14 +53,20 @@ local function cache_result(key, result)
     result = result,
     timestamp = vim.uv.now()
   }
+  log_debug("Cached result", { key = key, has_data = result ~= nil })
 end
 
 local function cleanup_cache()
   local now = vim.uv.now()
+  local cleaned = 0
   for key, entry in pairs(cache.data) do
     if (now - entry.timestamp) > cache.ttl then
       cache.data[key] = nil
+      cleaned = cleaned + 1
     end
+  end
+  if cleaned > 0 then
+    log_debug("Cache cleanup", { removed_entries = cleaned })
   end
 end
 
@@ -68,12 +104,38 @@ local function request_hover(params, callback, config)
     return
   end
 
+  log_debug("Requesting hover info", {
+    buffer = bufnr,
+    line = params.position.line + 1,
+    character = params.position.character + 1
+  })
+
+  local start_time = vim.uv.now()
+
   vim.lsp.buf_request(bufnr, 'textDocument/hover', params, function(err, result)
+    local duration = vim.uv.now() - start_time
     local hover_data = {}
 
-    if not err and result and result.contents then
+    if err then
+      log_error("Hover request failed", {
+        error = err,
+        duration_ms = duration,
+        buffer = bufnr
+      })
+    elseif result and result.contents then
       local hover_lines = vim.lsp.util.convert_input_to_markdown_lines(result.contents)
       hover_data = trim_empty_lines(hover_lines)
+      
+      log_debug("Hover request completed", {
+        duration_ms = duration,
+        lines_count = #hover_data,
+        has_content = #hover_data > 0
+      })
+    else
+      log_debug("Hover request returned no content", {
+        duration_ms = duration,
+        result = result
+      })
     end
 
     cache_result(cache_key, hover_data)
@@ -96,9 +158,25 @@ local function request_definition(params, callback, config)
     return
   end
 
+  log_debug("Requesting definition", {
+    buffer = bufnr,
+    line = params.position.line + 1,
+    character = params.position.character + 1
+  })
+
+  local start_time = vim.uv.now()
+
   vim.lsp.buf_request(bufnr, 'textDocument/definition', params, function(err, result)
+    local duration = vim.uv.now() - start_time
     local def_data = nil
-    if not err and result and #result > 0 then
+    
+    if err then
+      log_error("Definition request failed", {
+        error = err,
+        duration_ms = duration,
+        buffer = bufnr
+      })
+    elseif result and #result > 0 then
       local def = result[1]
       if def.uri then
         def_data = {
@@ -106,17 +184,36 @@ local function request_definition(params, callback, config)
           line = def.range.start.line + 1,
           col = def.range.start.character + 1
         }
+        
+        log_debug("Definition request completed", {
+          duration_ms = duration,
+          file = def_data.file,
+          location = string.format("%d:%d", def_data.line, def_data.col)
+        })
+      else
+        log_warn("Definition result missing URI", {
+          duration_ms = duration,
+          result = def
+        })
       end
+    else
+      log_debug("Definition request returned no results", {
+        duration_ms = duration,
+        result_count = result and #result or 0
+      })
     end
+    
     cache_result(cache_key, def_data)
     callback("definition", def_data)
   end)
 end
+
 local function request_references(params, callback, config)
   if not config.show_references_count then
     callback("references", nil)
     return
   end
+  
   local bufnr = vim.api.nvim_get_current_buf()
   local cache_key = make_cache_key(bufnr, params.position.line, params.position.character, "references")
   local cached = get_cached_result(cache_key)
@@ -124,16 +221,36 @@ local function request_references(params, callback, config)
     callback("references", cached)
     return
   end
+  
   local ref_params = vim.tbl_extend('force', params, {
     context = { includeDeclaration = true }
   })
+
+  log_debug("Requesting references", {
+    buffer = bufnr,
+    line = params.position.line + 1,
+    character = params.position.character + 1,
+    include_declaration = true
+  })
+
+  local start_time = vim.uv.now()
+  
   vim.lsp.buf_request(bufnr, 'textDocument/references', ref_params, function(err, result)
+    local duration = vim.uv.now() - start_time
     local ref_data = {
       count = 0,
       locations = {}
     }
-    if not err and result then
+    
+    if err then
+      log_error("References request failed", {
+        error = err,
+        duration_ms = duration,
+        buffer = bufnr
+      })
+    elseif result then
       ref_data.count = #result
+      
       for i, ref in ipairs(result) do
         if i <= config.max_references_shown and ref.uri then
           table.insert(ref_data.locations, {
@@ -143,9 +260,21 @@ local function request_references(params, callback, config)
           })
         end
       end
+      
       if #result > config.max_references_shown then
         ref_data.more_count = #result - config.max_references_shown
       end
+
+      log_debug("References request completed", {
+        duration_ms = duration,
+        total_count = ref_data.count,
+        displayed_count = #ref_data.locations,
+        more_count = ref_data.more_count or 0
+      })
+    else
+      log_debug("References request returned no results", {
+        duration_ms = duration
+      })
     end
 
     cache_result(cache_key, ref_data)
@@ -168,10 +297,25 @@ local function request_type_definition(params, callback, config)
     return
   end
 
+  log_debug("Requesting type definition", {
+    buffer = bufnr,
+    line = params.position.line + 1,
+    character = params.position.character + 1
+  })
+
+  local start_time = vim.uv.now()
+
   vim.lsp.buf_request(bufnr, 'textDocument/typeDefinition', params, function(err, result)
+    local duration = vim.uv.now() - start_time
     local type_data = nil
 
-    if not err and result and #result > 0 then
+    if err then
+      log_error("Type definition request failed", {
+        error = err,
+        duration_ms = duration,
+        buffer = bufnr
+      })
+    elseif result and #result > 0 then
       local type_def = result[1]
       if type_def.uri then
         type_data = {
@@ -179,7 +323,23 @@ local function request_type_definition(params, callback, config)
           line = type_def.range.start.line + 1,
           col = type_def.range.start.character + 1
         }
+        
+        log_debug("Type definition request completed", {
+          duration_ms = duration,
+          file = type_data.file,
+          location = string.format("%d:%d", type_data.line, type_data.col)
+        })
+      else
+        log_warn("Type definition result missing URI", {
+          duration_ms = duration,
+          result = type_def
+        })
       end
+    else
+      log_debug("Type definition request returned no results", {
+        duration_ms = duration,
+        result_count = result and #result or 0
+      })
     end
 
     cache_result(cache_key, type_data)
@@ -192,6 +352,14 @@ function M.gather_context_info(completion_callback, config)
   local position_encoding = get_position_encoding()
   local params = vim.lsp.util.make_position_params(0, position_encoding)
 
+  log_debug("Starting LSP context collection", {
+    buffer = vim.api.nvim_get_current_buf(),
+    filetype = vim.bo.filetype,
+    position = params.position,
+    encoding = position_encoding,
+    config = config
+  })
+
   -- Current file information
   local context_data = {
     file = format_file_path(vim.uri_from_bufnr(0)),
@@ -201,12 +369,22 @@ function M.gather_context_info(completion_callback, config)
   }
 
   local pending_requests = 0
+  local start_time = vim.uv.now()
+  local request_results = {}
+
   local function start_request()
     pending_requests = pending_requests + 1
   end
 
   local function complete_request(data_type, data)
     pending_requests = pending_requests - 1
+    request_results[data_type] = data
+
+    log_debug("LSP request completed", {
+      type = data_type,
+      pending = pending_requests,
+      has_data = data ~= nil
+    })
 
     if data_type == "hover" then
       context_data.hover = data
@@ -225,11 +403,36 @@ function M.gather_context_info(completion_callback, config)
     end
 
     if pending_requests == 0 then
+      local total_duration = vim.uv.now() - start_time
+      
+      log_debug("LSP context collection completed", {
+        total_duration_ms = total_duration,
+        requests_completed = vim.tbl_count(request_results),
+        has_hover = context_data.hover and #context_data.hover > 0,
+        has_definition = context_data.definition ~= nil,
+        references_count = context_data.references_count or 0,
+        has_type_def = context_data.type_definition ~= nil
+      })
+      
       cleanup_cache()
       completion_callback(context_data)
     end
   end
 
+  -- Check if we have any LSP clients before making requests
+  local clients = vim.lsp.get_clients({ bufnr = 0 })
+  if #clients == 0 then
+    log_warn("No LSP clients available for context collection")
+    completion_callback(context_data)
+    return
+  end
+
+  log_debug("Found LSP clients", {
+    count = #clients,
+    clients = vim.tbl_map(function(c) return c.name end, clients)
+  })
+
+  -- Start all requests
   start_request()
   request_hover(params, complete_request, config)
 
@@ -242,8 +445,14 @@ function M.gather_context_info(completion_callback, config)
   start_request()
   request_type_definition(params, complete_request, config)
 
+  -- Timeout fallback in case requests hang
   vim.defer_fn(function()
     if pending_requests > 0 then
+      log_warn("LSP requests timed out", {
+        pending_requests = pending_requests,
+        duration_ms = vim.uv.now() - start_time,
+        completed = request_results
+      })
       completion_callback(context_data)
     end
   end, 5000)
@@ -257,8 +466,15 @@ function M.get_symbol_at_cursor()
 
   local word = vim.fn.expand('<cword>')
   if not word or word == '' then
+    log_debug("No symbol under cursor")
     return nil
   end
+
+  log_debug("Symbol under cursor", {
+    word = word,
+    buffer = bufnr,
+    position = params.position
+  })
 
   return {
     word = word,
@@ -268,10 +484,33 @@ function M.get_symbol_at_cursor()
   }
 end
 
-
 -- Clear cache
 function M.clear_cache()
+  local cache_size = vim.tbl_count(cache.data)
   cache.data = {}
+  log_info("Cache cleared", { removed_entries = cache_size })
+end
+
+-- Get cache statistics
+function M.get_cache_stats()
+  local now = vim.uv.now()
+  local valid_entries = 0
+  local expired_entries = 0
+  
+  for _, entry in pairs(cache.data) do
+    if (now - entry.timestamp) < cache.ttl then
+      valid_entries = valid_entries + 1
+    else
+      expired_entries = expired_entries + 1
+    end
+  end
+
+  return {
+    total_entries = vim.tbl_count(cache.data),
+    valid_entries = valid_entries,
+    expired_entries = expired_entries,
+    ttl_ms = cache.ttl
+  }
 end
 
 return M

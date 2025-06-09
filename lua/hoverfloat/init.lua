@@ -1,8 +1,36 @@
--- lua/hoverfloat/init.lua - Main plugin entry point (Persistent Connection Version)
+-- lua/hoverfloat/init.lua - Main plugin entry point with enhanced logging
 local M = {}
 
 local lsp_collector = require('hoverfloat.lsp_collector')
 local socket_client = require('hoverfloat.socket_client')
+
+-- Logging helper
+local function log(level, message, details)
+  local timestamp = os.date("%H:%M:%S")
+  local log_msg = string.format("[HoverFloat %s] %s", timestamp, message)
+  if details then
+    log_msg = log_msg .. ": " .. vim.inspect(details)
+  end
+  vim.notify(log_msg, level)
+end
+
+local function log_info(message, details)
+  log(vim.log.levels.INFO, message, details)
+end
+
+local function log_warn(message, details)
+  log(vim.log.levels.WARN, message, details)
+end
+
+local function log_error(message, details)
+  log(vim.log.levels.ERROR, message, details)
+end
+
+local function log_debug(message, details)
+  if state.config and state.config.communication and state.config.communication.debug then
+    log(vim.log.levels.DEBUG, message, details)
+  end
+end
 
 -- Default configuration
 local default_config = {
@@ -60,11 +88,18 @@ local state = {
   last_sent_hash = nil,
   lsp_collection_in_progress = false,
   connection_status_timer = nil,
+  startup_time = vim.uv.now(),
+  total_updates_sent = 0,
+  total_lsp_requests = 0,
+  last_error_time = 0,
 }
 
 -- Helper function to find TUI binary
 local function find_tui_binary()
+  log_debug("Searching for TUI binary")
+  
   if state.binary_path then
+    log_debug("Using cached binary path", state.binary_path)
     return state.binary_path
   end
 
@@ -84,9 +119,12 @@ local function find_tui_binary()
     '/usr/bin/nvim-context-tui',
   }
 
+  log_debug("Checking binary paths", possible_paths)
+
   for _, path in ipairs(possible_paths) do
     if vim.fn.executable(path) == 1 then
       state.binary_path = path
+      log_info("Found TUI binary", path)
       return path
     end
   end
@@ -94,16 +132,29 @@ local function find_tui_binary()
   -- Try PATH
   if vim.fn.executable(state.config.tui.binary_name) == 1 then
     state.binary_path = state.config.tui.binary_name
+    log_info("Found TUI binary in PATH", state.binary_path)
     return state.binary_path
   end
 
+  log_error("TUI binary not found", { 
+    searched_paths = possible_paths,
+    binary_name = state.config.tui.binary_name 
+  })
   return nil
 end
 
 -- Helper function to check if LSP clients are available
 local function has_lsp_clients()
   local clients = vim.lsp.get_clients({ bufnr = 0 })
-  return #clients > 0
+  local has_clients = #clients > 0
+  
+  if not has_clients then
+    log_debug("No LSP clients attached to current buffer")
+  else
+    log_debug("Found LSP clients", { count = #clients, names = vim.tbl_map(function(c) return c.name end, clients) })
+  end
+  
+  return has_clients
 end
 
 -- Check if current filetype should be excluded
@@ -111,6 +162,7 @@ local function should_skip_update()
   local filetype = vim.bo.filetype
   for _, excluded in ipairs(state.config.tracking.excluded_filetypes) do
     if filetype == excluded then
+      log_debug("Skipping update for excluded filetype", filetype)
       return true
     end
   end
@@ -137,9 +189,19 @@ end
 
 -- Check if we should update context
 local function should_update_context()
-  if not state.plugin_enabled then return false end
-  if not has_lsp_clients() then return false end
-  if should_skip_update() then return false end
+  if not state.plugin_enabled then 
+    log_debug("Plugin disabled, skipping update")
+    return false 
+  end
+  
+  if not has_lsp_clients() then 
+    log_debug("No LSP clients, skipping update")
+    return false 
+  end
+  
+  if should_skip_update() then 
+    return false 
+  end
 
   return true
 end
@@ -152,18 +214,34 @@ local function update_context()
 
   -- Prevent overlapping LSP collection calls that can cause race conditions
   if state.lsp_collection_in_progress then
+    log_debug("LSP collection already in progress, skipping")
     return
   end
 
   state.lsp_collection_in_progress = true
+  state.total_lsp_requests = state.total_lsp_requests + 1
+  
+  log_debug("Starting LSP context collection", { 
+    request_number = state.total_lsp_requests,
+    buffer = vim.api.nvim_get_current_buf(),
+    cursor_pos = vim.api.nvim_win_get_cursor(0)
+  })
 
   -- Always collect LSP context information
   lsp_collector.gather_context_info(function(context_data)
     state.lsp_collection_in_progress = false
 
     if not context_data then
+      log_warn("LSP collection returned no data")
       return
     end
+
+    log_debug("LSP context collection completed", {
+      has_hover = context_data.hover and #context_data.hover > 0,
+      has_definition = context_data.definition ~= nil,
+      references_count = context_data.references_count or 0,
+      has_type_def = context_data.type_definition ~= nil
+    })
 
     -- Generate hash of the new context data
     local new_hash = hash_context_data(context_data)
@@ -172,12 +250,25 @@ local function update_context()
     if new_hash ~= state.last_sent_hash then
       -- Content is different from last sent message, send update
       state.last_sent_hash = new_hash
+      state.total_updates_sent = state.total_updates_sent + 1
+
+      log_debug("Sending context update", { 
+        update_number = state.total_updates_sent,
+        hash = new_hash:sub(1, 8) .. "...",
+        connected = socket_client.is_connected()
+      })
 
       -- Send through persistent connection
       local success = socket_client.send_context_update(context_data)
-      if not success and state.config.communication.debug then
-        vim.notify("Failed to send context update (will be queued)", vim.log.levels.DEBUG)
+      if not success then
+        if state.config.communication.debug then
+          log_warn("Failed to send context update (queued for later)")
+        end
+      else
+        log_debug("Context update sent successfully")
       end
+    else
+      log_debug("Context unchanged, skipping duplicate update")
     end
   end, state.config.features)
 end
@@ -202,8 +293,17 @@ local function monitor_connection_status()
   end
 
   state.connection_status_timer = vim.fn.timer_start(5000, function() -- Check every 5 seconds
+    local socket_status = socket_client.get_status()
+    log_debug("Connection status check", {
+      socket_connected = socket_status.connected,
+      socket_connecting = socket_status.connecting,
+      tui_running = state.display_process ~= nil,
+      queue_size = socket_status.queued_messages
+    })
+
     if not socket_client.is_connected() and state.display_process then
       -- TUI is running but socket is disconnected
+      log_warn("TUI running but socket disconnected, attempting reconnection")
       if state.config.auto_connect then
         socket_client.ensure_connected()
       end
@@ -214,14 +314,16 @@ end
 -- Start the display process
 local function start_display_process()
   if state.display_process then
-    vim.notify("Display process already running", vim.log.levels.WARN)
+    log_warn("Display process already running", { pid = state.display_process })
     return true
   end
+
+  log_info("Starting display process")
 
   -- Find TUI binary
   local binary_path = find_tui_binary()
   if not binary_path then
-    vim.notify("TUI binary not found. Run `make install` to build the binary.", vim.log.levels.ERROR)
+    log_error("Cannot start: TUI binary not found. Run 'make install' to build the binary.")
     return false
   end
 
@@ -235,12 +337,26 @@ local function start_display_process()
     "-e", binary_path, state.config.communication.socket_path
   }
 
+  log_debug("Starting terminal with TUI", {
+    terminal = state.config.tui.terminal_cmd,
+    binary = binary_path,
+    socket = state.config.communication.socket_path,
+    args = terminal_args
+  })
+
   -- Start the terminal with TUI
   local handle = vim.fn.jobstart(
     { state.config.tui.terminal_cmd, unpack(terminal_args) },
     {
       detach = true,
       on_exit = function(job_id, exit_code, event)
+        log_warn("TUI process exited", { 
+          job_id = job_id, 
+          exit_code = exit_code, 
+          event = event,
+          uptime_ms = vim.uv.now() - state.startup_time
+        })
+        
         state.display_process = nil
 
         -- Disconnect socket when TUI exits
@@ -253,13 +369,21 @@ local function start_display_process()
         end
 
         if exit_code ~= 0 and state.config.auto_restart_on_error then
-          vim.notify("Display process exited unexpectedly, restarting...", vim.log.levels.WARN)
+          log_info("Auto-restarting TUI process in 2 seconds")
           vim.defer_fn(start_display_process, 2000)
         end
       end,
       on_stderr = function(job_id, data, event)
         if #data > 1 or (data[1] and data[1] ~= "") then
-          vim.notify("TUI error: " .. table.concat(data, "\n"), vim.log.levels.ERROR)
+          local error_msg = table.concat(data, "\n")
+          log_error("TUI stderr output", error_msg)
+          state.last_error_time = vim.uv.now()
+        end
+      end,
+      on_stdout = function(job_id, data, event)
+        if #data > 1 or (data[1] and data[1] ~= "") then
+          local stdout_msg = table.concat(data, "\n")
+          log_debug("TUI stdout output", stdout_msg)
         end
       end
     }
@@ -267,10 +391,16 @@ local function start_display_process()
 
   if handle > 0 then
     state.display_process = handle
-    vim.notify("Context display window started", vim.log.levels.INFO)
+    state.startup_time = vim.uv.now()
+    log_info("Context display window started", { 
+      pid = handle,
+      binary = binary_path,
+      socket = state.config.communication.socket_path
+    })
 
     -- Wait for TUI to initialize, then try to connect
     vim.defer_fn(function()
+      log_debug("Attempting initial socket connection")
       if state.config.auto_connect then
         socket_client.connect(state.config.communication.socket_path)
       end
@@ -281,20 +411,29 @@ local function start_display_process()
       -- Send initial update after connection is established
       vim.defer_fn(function()
         if socket_client.is_connected() then
+          log_debug("Sending initial context update")
           debounced_update()
+        else
+          log_debug("Socket not connected yet, skipping initial update")
         end
       end, 1000)
     end, 1000)
 
     return true
   else
-    vim.notify("Failed to start display process", vim.log.levels.ERROR)
+    log_error("Failed to start display process", { 
+      handle = handle,
+      terminal = state.config.tui.terminal_cmd,
+      binary = binary_path
+    })
     return false
   end
 end
 
 -- Stop the display process
 local function stop_display_process()
+  log_info("Stopping display process")
+  
   -- Disconnect socket first
   socket_client.disconnect()
 
@@ -305,9 +444,12 @@ local function stop_display_process()
   end
 
   if state.display_process then
+    log_debug("Killing TUI process", { pid = state.display_process })
     vim.fn.jobstop(state.display_process)
     state.display_process = nil
-    vim.notify("Context display window closed", vim.log.levels.INFO)
+    log_info("Context display window closed")
+  else
+    log_debug("No display process to stop")
   end
 end
 
@@ -331,6 +473,11 @@ local function setup_autocmds()
     group = group,
     callback = function()
       if not state.plugin_enabled then return end
+      log_debug("Buffer entered", { 
+        buffer = vim.api.nvim_get_current_buf(),
+        filetype = vim.bo.filetype,
+        has_lsp = has_lsp_clients()
+      })
       if has_lsp_clients() and socket_client.is_connected() then
         vim.defer_fn(debounced_update, 100)
       end
@@ -340,11 +487,25 @@ local function setup_autocmds()
   -- Handle LSP attach/detach
   vim.api.nvim_create_autocmd("LspAttach", {
     group = group,
-    callback = function()
+    callback = function(event)
       if not state.plugin_enabled then return end
+      log_info("LSP attached to buffer", { 
+        buffer = event.buf,
+        client = vim.lsp.get_client_by_id(event.data.client_id).name
+      })
       if socket_client.is_connected() then
         vim.defer_fn(debounced_update, 200)
       end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("LspDetach", {
+    group = group,
+    callback = function(event)
+      log_info("LSP detached from buffer", { 
+        buffer = event.buf,
+        client = event.data.client_id
+      })
     end,
   })
 
@@ -352,6 +513,7 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
     callback = function()
+      log_info("Neovim exiting, cleaning up HoverFloat")
       stop_display_process()
       socket_client.cleanup()
     end,
@@ -374,26 +536,44 @@ local function setup_commands()
         start_display_process()
       end
     elseif action == 'restart' then
+      log_info("Manually restarting context window")
       stop_display_process()
       vim.defer_fn(start_display_process, 500)
     elseif action == 'status' then
-      print(vim.inspect(M.get_status()))
+      local status = M.get_status()
+      log_info("HoverFloat Status", status)
     elseif action == 'connect' then
+      log_info("Manually connecting socket")
       socket_client.connect(state.config.communication.socket_path)
     elseif action == 'disconnect' then
+      log_info("Manually disconnecting socket")
       socket_client.disconnect()
     elseif action == 'reconnect' then
+      log_info("Manually reconnecting socket")
       socket_client.force_reconnect()
     elseif action == 'health' then
-      print(vim.inspect(socket_client.get_connection_health()))
+      local health = socket_client.get_connection_health()
+      log_info("HoverFloat Health Check", health)
+    elseif action == 'debug' then
+      -- Toggle debug mode
+      state.config.communication.debug = not state.config.communication.debug
+      log_info("Debug mode " .. (state.config.communication.debug and "enabled" or "disabled"))
+    elseif action == 'stats' then
+      local uptime = math.floor((vim.uv.now() - state.startup_time) / 1000)
+      log_info("HoverFloat Statistics", {
+        uptime_seconds = uptime,
+        total_lsp_requests = state.total_lsp_requests,
+        total_updates_sent = state.total_updates_sent,
+        last_error_time = state.last_error_time > 0 and os.date("%H:%M:%S", state.last_error_time / 1000) or "none",
+        current_hash = state.last_sent_hash and state.last_sent_hash:sub(1, 8) .. "..." or "none"
+      })
     else
-      vim.notify('Usage: ContextWindow [open|close|toggle|restart|status|connect|disconnect|reconnect|health]',
-        vim.log.levels.INFO)
+      log_info('Usage: ContextWindow [open|close|toggle|restart|status|connect|disconnect|reconnect|health|debug|stats]')
     end
   end, {
     nargs = '?',
     complete = function()
-      return { 'open', 'close', 'toggle', 'restart', 'status', 'connect', 'disconnect', 'reconnect', 'health' }
+      return { 'open', 'close', 'toggle', 'restart', 'status', 'connect', 'disconnect', 'reconnect', 'health', 'debug', 'stats' }
     end,
     desc = 'Manage LSP context window'
   })
@@ -432,12 +612,18 @@ local function setup_keymaps()
     { desc = 'Reconnect Context Window', silent = true })
   vim.keymap.set('n', '<leader>ch', ':ContextWindow health<CR>',
     { desc = 'Context Window Health', silent = true })
+  vim.keymap.set('n', '<leader>cd', ':ContextWindow debug<CR>',
+    { desc = 'Toggle Debug Mode', silent = true })
 end
 
 -- Main setup function
 function M.setup(opts)
+  log_info("Setting up HoverFloat plugin")
+  
   -- Merge user configuration with defaults
   state.config = vim.tbl_deep_extend("force", default_config, opts or {})
+
+  log_debug("Plugin configuration", state.config)
 
   -- Initialize socket client with configuration
   socket_client.setup(state.config.communication)
@@ -449,15 +635,20 @@ function M.setup(opts)
 
   -- Auto-start if configured
   if state.config.auto_start then
+    log_info("Auto-starting display process in 1 second")
     vim.defer_fn(function()
       start_display_process()
     end, 1000) -- Give Neovim time to fully load
   end
 
-  vim.notify("LSP Context Window plugin loaded (persistent connections)", vim.log.levels.INFO)
+  log_info("LSP Context Window plugin loaded successfully", {
+    debug_mode = state.config.communication.debug,
+    auto_start = state.config.auto_start,
+    socket_path = state.config.communication.socket_path
+  })
 end
 
--- Public API (enhanced for persistent connections)
+-- Enhanced Public API
 M.start = start_display_process
 M.stop = stop_display_process
 M.toggle = function()
@@ -470,12 +661,12 @@ end
 
 M.enable = function()
   state.plugin_enabled = true
-  vim.notify("Context window plugin enabled", vim.log.levels.INFO)
+  log_info("Context window plugin enabled")
 end
 
 M.disable = function()
   state.plugin_enabled = false
-  vim.notify("Context window plugin disabled", vim.log.levels.INFO)
+  log_info("Context window plugin disabled")
 end
 
 M.is_running = function()
@@ -519,9 +710,13 @@ M.get_status = function()
     socket_connecting = socket_status.connecting,
     binary_path = state.binary_path,
     config = state.config,
-    last_sent_hash = state.last_sent_hash,
+    last_sent_hash = state.last_sent_hash and state.last_sent_hash:sub(1, 8) .. "..." or nil,
     lsp_collection_in_progress = state.lsp_collection_in_progress,
     socket_status = socket_status,
+    uptime_ms = vim.uv.now() - state.startup_time,
+    total_lsp_requests = state.total_lsp_requests,
+    total_updates_sent = state.total_updates_sent,
+    last_error_time = state.last_error_time,
   }
 end
 
@@ -532,9 +727,10 @@ end
 M.set_binary_path = function(path)
   if vim.fn.executable(path) == 1 then
     state.binary_path = path
+    log_info("Binary path updated", path)
     return true
   else
-    vim.notify("Binary not executable: " .. path, vim.log.levels.ERROR)
+    log_error("Binary not executable", path)
     return false
   end
 end
@@ -545,11 +741,24 @@ M.test_connection = function()
 end
 
 M.force_update = function()
+  log_debug("Forcing context update")
   update_context()
 end
 
 M.reset_connection = function()
+  log_info("Resetting connection")
   socket_client.reset()
+end
+
+-- Enable/disable debug mode
+M.enable_debug = function()
+  state.config.communication.debug = true
+  log_info("Debug mode enabled")
+end
+
+M.disable_debug = function()
+  state.config.communication.debug = false
+  log_info("Debug mode disabled")
 end
 
 return M
