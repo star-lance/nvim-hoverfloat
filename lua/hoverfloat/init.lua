@@ -8,27 +8,19 @@ local M = {}
 
 local lsp_collector = require('hoverfloat.lsp_collector')
 local socket_client = require('hoverfloat.socket_client')
+local logger = require('hoverfloat.logger') -- Fixed: Added missing logger import
 
--- Logging helper
-local function log(level, message, details)
-  local timestamp = os.date("%H:%M:%S")
-  local log_msg = string.format("[HoverFloat %s] %s", timestamp, message)
-  if details then
-    log_msg = log_msg .. ": " .. vim.inspect(details)
-  end
-  vim.notify(log_msg, level)
-end
-
+-- Logging helper - use file logger instead of vim.notify
 local function log_info(message, details)
-  log(vim.log.levels.INFO, message, details)
+  logger.plugin("info", message, details)
 end
 
 local function log_warn(message, details)
-  log(vim.log.levels.WARN, message, details)
+  logger.plugin("warn", message, details)
 end
 
 local function log_error(message, details)
-  log(vim.log.levels.ERROR, message, details)
+  logger.plugin("error", message, details)
 end
 
 -- Plugin state - initialize early to avoid undefined access
@@ -58,7 +50,7 @@ local function log_debug(message, details)
   end
 
   if debug_enabled then
-    log(vim.log.levels.DEBUG, message, details)
+    logger.plugin("debug", message, details)
   end
 end
 
@@ -106,22 +98,6 @@ local default_config = {
   auto_start = true,
   auto_restart_on_error = true,
   auto_connect = true, -- Automatically connect to TUI when available
-}
-
--- Plugin state
-local state = {
-  config = {},
-  update_timer = nil,
-  display_process = nil,
-  plugin_enabled = true,
-  binary_path = nil,
-  last_sent_hash = nil,
-  lsp_collection_in_progress = false,
-  connection_status_timer = nil,
-  startup_time = vim.uv.now(),
-  total_updates_sent = 0,
-  total_lsp_requests = 0,
-  last_error_time = 0,
 }
 
 -- Helper function to find TUI binary (with debug/production detection)
@@ -801,7 +777,7 @@ local function setup_commands()
       end
     else
       log_info(
-      'Usage: ContextWindow [open|close|toggle|restart|status|connect|disconnect|reconnect|health|debug|stats|test-tui|socket-info|test-socket|test-lsp|switch-debug|switch-prod|binary-info|logs|log-path|log-tail|log-clean]')
+        'Usage: ContextWindow [open|close|toggle|restart|status|connect|disconnect|reconnect|health|debug|stats|test-tui|socket-info|test-socket|test-lsp|switch-debug|switch-prod|binary-info|logs|log-path|log-tail|log-clean]')
     end
   end, {
     nargs = '?',

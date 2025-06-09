@@ -47,55 +47,26 @@ local function get_reconnect_delay()
   return delay
 end
 
--- Enhanced logging functions
-local function log_connection_event(event, details)
-  local timestamp = os.date("%H:%M:%S")
-  local log_msg = string.format("[HoverFloat Socket %s] %s", timestamp, event)
-  if details then
-    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
-  end
+-- Import logger at the top level
+local logger = require('hoverfloat.logger')
 
-  vim.schedule(function()
-    if config.debug then
-      vim.notify(log_msg, vim.log.levels.DEBUG)
-    end
-  end)
+-- Enhanced logging functions - use file logger instead of vim.notify
+local function log_connection_event(event, details)
+  if config.debug then
+    logger.socket("debug", event, details)
+  end
 end
 
 local function log_error(event, details)
-  local timestamp = os.date("%H:%M:%S")
-  local log_msg = string.format("[HoverFloat Socket %s] ERROR: %s", timestamp, event)
-  if details then
-    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
-  end
-
-  vim.schedule(function()
-    vim.notify(log_msg, vim.log.levels.ERROR)
-  end)
+  logger.socket("error", event, details)
 end
 
 local function log_warn(event, details)
-  local timestamp = os.date("%H:%M:%S")
-  local log_msg = string.format("[HoverFloat Socket %s] WARN: %s", timestamp, event)
-  if details then
-    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
-  end
-
-  vim.schedule(function()
-    vim.notify(log_msg, vim.log.levels.WARN)
-  end)
+  logger.socket("warn", event, details)
 end
 
 local function log_info(event, details)
-  local timestamp = os.date("%H:%M:%S")
-  local log_msg = string.format("[HoverFloat Socket %s] %s", timestamp, event)
-  if details then
-    log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
-  end
-
-  vim.schedule(function()
-    vim.notify(log_msg, vim.log.levels.INFO)
-  end)
+  logger.socket("info", event, details)
 end
 
 -- Clean up connection resources
