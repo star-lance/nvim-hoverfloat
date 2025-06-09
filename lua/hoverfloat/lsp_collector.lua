@@ -95,8 +95,13 @@ local function get_hover_info(callback)
     callback(nil)
   end)
   
-  -- Make the hover request
-  vim.lsp.buf.hover()
+  -- Make the hover request without triggering popup
+  local params = vim.lsp.util.make_position_params()
+  vim.lsp.buf_request(0, 'textDocument/hover', params, function(err, result, ctx, config)
+    if original_handler then
+      original_handler(err, result, ctx, config)
+    end
+  end)
 end
 
 -- Simplified definition using Neovim's location handling
@@ -151,7 +156,13 @@ local function get_definition_info(callback)
     callback(nil)
   end)
   
-  vim.lsp.buf.definition()
+  -- Make the definition request without triggering navigation
+  local params = vim.lsp.util.make_position_params()
+  vim.lsp.buf_request(0, 'textDocument/definition', params, function(err, result, ctx, config)
+    if original_handler then
+      original_handler(err, result, ctx, config)
+    end
+  end)
 end
 
 -- Simplified references using Neovim's location handling
@@ -216,7 +227,14 @@ local function get_references_info(callback, max_refs)
     callback(nil)
   end)
   
-  vim.lsp.buf.references()
+  -- Make the references request without triggering navigation
+  local params = vim.lsp.util.make_position_params()
+  params.context = { includeDeclaration = true }
+  vim.lsp.buf_request(0, 'textDocument/references', params, function(err, result, ctx, config)
+    if original_handler then
+      original_handler(err, result, ctx, config)
+    end
+  end)
 end
 
 -- Simplified type definition
