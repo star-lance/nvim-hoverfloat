@@ -390,8 +390,12 @@ function create_connection()
       connection_completed = true
       log_connection_event("Cancelling connection timeout timer", { timer_id = timeout_timer })
 
-      vim.fn.timer_stop(timeout_timer)
-      timeout_timer = nil
+      vim.schedule(function()
+        if timeout_timer then
+          vim.fn.timer_stop(timeout_timer)
+          timeout_timer = nil
+        end
+      end)
     end
   end
 
