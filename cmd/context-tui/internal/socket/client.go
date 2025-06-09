@@ -11,7 +11,7 @@ import (
 type Message struct {
 	Type      string      `json:"type"`
 	Timestamp int64       `json:"timestamp"`
-	Data      ContextData `json:"data"`
+	Data      interface{} `json:"data"` // Changed from ContextData to interface{}
 }
 
 // ContextData represents the LSP context data
@@ -172,72 +172,47 @@ func ParseMessage(data []byte) (*Message, error) {
 
 // CreateMessage creates a new message with the specified type and data
 func CreateMessage(msgType string, data interface{}) (*Message, error) {
-	// Convert data to ContextData if it's not already
-	var contextData ContextData
-
-	switch d := data.(type) {
-	case ContextData:
-		contextData = d
-	case *ContextData:
-		if d != nil {
-			contextData = *d
-		}
-	case map[string]interface{}:
-		// Convert from map - this is a fallback for complex data
-		jsonData, err := json.Marshal(d)
-		if err != nil {
-			return nil, err
-		}
-		err = json.Unmarshal(jsonData, &contextData)
-		if err != nil {
-			return nil, err
-		}
-	default:
-		// For other message types (ping, pong, etc.), create empty context data
-		// The actual payload will be in the Data field but parsed differently
-	}
-
 	return &Message{
 		Type:      msgType,
 		Timestamp: time.Now().UnixMilli(),
-		Data:      contextData,
+		Data:      data,
 	}, nil
+}
+
+// CreateContextUpdateMessage creates a context update message
+func CreateContextUpdateMessage(contextData *ContextData) (*Message, error) {
+	return CreateMessage("context_update", contextData)
 }
 
 // CreatePingMessage creates a ping message
 func CreatePingMessage() (*Message, error) {
-	return &Message{
-		Type:      "ping",
+	return CreateMessage("ping", PingData{
 		Timestamp: time.Now().UnixMilli(),
-		Data:      ContextData{}, // Empty context data for ping
-	}, nil
+	})
 }
 
 // CreatePongMessage creates a pong message
 func CreatePongMessage(clientTimestamp int64) (*Message, error) {
-	return &Message{
-		Type:      "pong",
-		Timestamp: time.Now().UnixMilli(),
-		Data:      ContextData{}, // Empty context data for pong
-	}, nil
+	return CreateMessage("pong", PongData{
+		Timestamp:       time.Now().UnixMilli(),
+		ClientTimestamp: clientTimestamp,
+	})
 }
 
 // CreateErrorMessage creates an error message
 func CreateErrorMessage(errorMsg string, details string) (*Message, error) {
-	return &Message{
-		Type:      "error",
-		Timestamp: time.Now().UnixMilli(),
-		Data:      ContextData{}, // Empty context data for error
-	}, nil
+	return CreateMessage("error", ErrorData{
+		Error:   errorMsg,
+		Details: details,
+	})
 }
 
 // CreateDisconnectMessage creates a disconnect message
 func CreateDisconnectMessage(reason string) (*Message, error) {
-	return &Message{
-		Type:      "disconnect",
+	return CreateMessage("disconnect", DisconnectData{
+		Reason:    reason,
 		Timestamp: time.Now().UnixMilli(),
-		Data:      ContextData{}, // Empty context data for disconnect
-	}, nil
+	})
 }
 
 // Message type constants
@@ -263,6 +238,132 @@ func IsValidMessageType(msgType string) bool {
 	default:
 		return false
 	}
+}
+
+// Helper functions to extract typed data from messages
+
+// ExtractContextData safely extracts ContextData from a message
+func (m *Message) ExtractContextData() (*ContextData, bool) {
+	if m.Type != MessageTypeContextUpdate {
+		return nil, false
+	}
+
+	// Try direct type assertion first
+	if contextData, ok := m.Data.(*ContextData); ok {
+		return contextData, true
+	}
+
+	// Try map conversion for JSON unmarshaled data
+	if dataMap, ok := m.Data.(map[string]interface{}); ok {
+		// Re-marshal and unmarshal to convert to ContextData
+		jsonBytes, err := json.Marshal(dataMap)
+		if err != nil {
+			return nil, false
+		}
+
+		var contextData ContextData
+		err = json.Unmarshal(jsonBytes, &contextData)
+		if err != nil {
+			return nil, false
+		}
+
+		return &contextData, true
+	}
+
+	return nil, false
+}
+
+// ExtractErrorData safely extracts ErrorData from a message
+func (m *Message) ExtractErrorData() (*ErrorData, bool) {
+	if m.Type != MessageTypeError {
+		return nil, false
+	}
+
+	// Try direct type assertion first
+	if errorData, ok := m.Data.(*ErrorData); ok {
+		return errorData, true
+	}
+
+	// Try map conversion for JSON unmarshaled data
+	if dataMap, ok := m.Data.(map[string]interface{}); ok {
+		// Re-marshal and unmarshal to convert to ErrorData
+		jsonBytes, err := json.Marshal(dataMap)
+		if err != nil {
+			return nil, false
+		}
+
+		var errorData ErrorData
+		err = json.Unmarshal(jsonBytes, &errorData)
+		if err != nil {
+			return nil, false
+		}
+
+		return &errorData, true
+	}
+
+	return nil, false
+}
+
+// ExtractPingData safely extracts PingData from a message
+func (m *Message) ExtractPingData() (*PingData, bool) {
+	if m.Type != MessageTypePing {
+		return nil, false
+	}
+
+	// Try direct type assertion first
+	if pingData, ok := m.Data.(*PingData); ok {
+		return pingData, true
+	}
+
+	// Try map conversion for JSON unmarshaled data
+	if dataMap, ok := m.Data.(map[string]interface{}); ok {
+		// Re-marshal and unmarshal to convert to PingData
+		jsonBytes, err := json.Marshal(dataMap)
+		if err != nil {
+			return nil, false
+		}
+
+		var pingData PingData
+		err = json.Unmarshal(jsonBytes, &pingData)
+		if err != nil {
+			return nil, false
+		}
+
+		return &pingData, true
+	}
+
+	return nil, false
+}
+
+// ExtractDisconnectData safely extracts DisconnectData from a message
+func (m *Message) ExtractDisconnectData() (*DisconnectData, bool) {
+	if m.Type != MessageTypeDisconnect {
+		return nil, false
+	}
+
+	// Try direct type assertion first
+	if disconnectData, ok := m.Data.(*DisconnectData); ok {
+		return disconnectData, true
+	}
+
+	// Try map conversion for JSON unmarshaled data
+	if dataMap, ok := m.Data.(map[string]interface{}); ok {
+		// Re-marshal and unmarshal to convert to DisconnectData
+		jsonBytes, err := json.Marshal(dataMap)
+		if err != nil {
+			return nil, false
+		}
+
+		var disconnectData DisconnectData
+		err = json.Unmarshal(jsonBytes, &disconnectData)
+		if err != nil {
+			return nil, false
+		}
+
+		return &disconnectData, true
+	}
+
+	return nil, false
 }
 
 // Utility methods for ContextData
