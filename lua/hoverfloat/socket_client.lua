@@ -390,44 +390,36 @@ function create_connection()
       connection_completed = true
       log_connection_event("Cancelling connection timeout timer", { timer_id = timeout_timer })
 
-      vim.schedule(function()
-        if timeout_timer then
-          vim.fn.timer_stop(timeout_timer)
-          timeout_timer = nil
-        end
-      end)
+      vim.fn.timer_stop(timeout_timer)
+      timeout_timer = nil
     end
   end
 
-  -- Set up connection timeout using vim.schedule
-  vim.schedule(function()
+  -- Set up connection timeout immediately (not scheduled)
+  timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
     if not connection_completed then
-      timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
-        if not connection_completed then
-          connection_completed = true
-          log_error("Connection timeout fired", {
-            timeout_ms = config.connection_timeout,
-            attempt = state.connection_attempts + 1,
-            connecting = state.connecting,
-            connected = state.connected
-          })
-
-          if socket and not socket:is_closing() then
-            socket:close()
-          end
-          state.connecting = false
-          handle_connection_failure("Connection timeout")
-        else
-          log_connection_event("Timeout timer fired after connection completed - ignoring")
-        end
-      end)
-
-      log_connection_event("Connection timeout timer started", {
-        timer_id = timeout_timer,
-        timeout_ms = config.connection_timeout
+      connection_completed = true
+      log_error("Connection timeout fired", {
+        timeout_ms = config.connection_timeout,
+        attempt = state.connection_attempts + 1,
+        connecting = state.connecting,
+        connected = state.connected
       })
+
+      if socket and not socket:is_closing() then
+        socket:close()
+      end
+      state.connecting = false
+      handle_connection_failure("Connection timeout")
+    else
+      log_connection_event("Timeout timer fired after connection completed - ignoring")
     end
   end)
+
+  log_connection_event("Connection timeout timer started", {
+    timer_id = timeout_timer,
+    timeout_ms = config.connection_timeout
+  })
 
   -- Attempt connection
   socket:connect(state.socket_path, function(err)
