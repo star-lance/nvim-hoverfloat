@@ -130,6 +130,26 @@ type Context struct {
 	TypeDefinition  *socket.LocationInfo  `json:"type_definition,omitempty"`
 }
 
+// convertSocketContextToModel converts socket.ContextData to model.Context
+func convertSocketContextToModel(socketData *socket.ContextData) *Context {
+	if socketData == nil {
+		return nil
+	}
+
+	return &Context{
+		File:            socketData.File,
+		Line:            socketData.Line,
+		Col:             socketData.Col,
+		Timestamp:       socketData.Timestamp,
+		Hover:           socketData.Hover,
+		Definition:      socketData.Definition,
+		ReferencesCount: socketData.ReferencesCount,
+		References:      socketData.References,
+		ReferencesMore:  socketData.ReferencesMore,
+		TypeDefinition:  socketData.TypeDefinition,
+	}
+}
+
 // NewApp creates a new application model
 func NewApp(socketPath string) *App {
 	return &App{
@@ -168,7 +188,8 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyPress(msg)
 
 	case socket.ContextUpdateMsg:
-		m.Context = (*Context)(msg.Data)
+		// Convert socket.ContextData to model.Context
+		m.Context = convertSocketContextToModel(msg.Data)
 		m.LastUpdate = time.Now()
 		m.ErrorMsg = ""
 		return m, m.messageBridge.CheckMessages()
@@ -462,18 +483,29 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 		// Handle different message types
 		switch msg.Type {
 		case "context_update":
-			m.messageBridge.SendMessage(socket.ContextUpdateMsg{Data: &msg.Data})
+			if contextData, ok := msg.ExtractContextData(); ok {
+				m.messageBridge.SendMessage(socket.ContextUpdateMsg{Data: contextData})
+			} else {
+				m.messageBridge.SendMessage(socket.ErrorMsg("Failed to extract context data from message"))
+			}
 
 		case "ping":
-			m.handlePing(conn, msg.Timestamp)
+			if pingData, ok := msg.ExtractPingData(); ok {
+				m.handlePing(conn, pingData.Timestamp)
+			} else {
+				// Fallback to message timestamp
+				m.handlePing(conn, msg.Timestamp)
+			}
 
 		case "disconnect":
 			// Client requested clean disconnect
 			return
 
 		case "error":
-			if errorMsg, ok := msg.Data.(map[string]interface{})["error"].(string); ok {
-				m.messageBridge.SendMessage(socket.ErrorMsg(errorMsg))
+			if errorData, ok := msg.ExtractErrorData(); ok {
+				m.messageBridge.SendMessage(socket.ErrorMsg(errorData.Error))
+			} else {
+				m.messageBridge.SendMessage(socket.ErrorMsg("Unknown error occurred"))
 			}
 
 		default:
