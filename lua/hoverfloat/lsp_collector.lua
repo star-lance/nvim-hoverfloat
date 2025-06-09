@@ -1,515 +1,368 @@
--- lua/hoverfloat/lsp_collector.lua - LSP data collection with enhanced logging
+-- lua/hoverfloat/lsp_collector_simple.lua - Focus on display, delegate LSP to Neovim
 local M = {}
 
--- Logging helpers
-local function log(level, message, details)
-  local timestamp = os.date("%H:%M:%S")
-  local log_msg = string.format("[HoverFloat LSP %s] %s", timestamp, message)
-  if details then
-    log_msg = log_msg .. ": " .. vim.inspect(details)
-  end
-  vim.notify(log_msg, level)
+-- Import the logger
+local logger = require('hoverfloat.logger')
+
+-- Simple logging for this module (non-disruptive)
+local function log_debug(msg, data)
+  logger.lsp("debug", msg, data)
 end
 
-local function log_debug(message, details)
-  if vim.g.hoverfloat_debug then
-    log(vim.log.levels.DEBUG, message, details)
-  end
+local function log_info(msg, data)
+  logger.lsp("info", msg, data)
 end
 
-local function log_info(message, details)
-  log(vim.log.levels.INFO, message, details)
+local function log_warn(msg, data)
+  logger.lsp("warn", msg, data)
 end
 
-local function log_warn(message, details)
-  log(vim.log.levels.WARN, message, details)
+local function log_error(msg, data)
+  logger.lsp("error", msg, data)
 end
 
-local function log_error(message, details)
-  log(vim.log.levels.ERROR, message, details)
-end
-
-local cache = {
-  data = {},
-  ttl = 30000, -- 30 seconds TTL
-}
-
-local function make_cache_key(bufnr, line, col, request_type)
-  return string.format("%d:%d:%d:%s", bufnr, line, col, request_type)
-end
-
-local function get_cached_result(key)
-  local entry = cache.data[key]
-  if entry and (vim.uv.now() - entry.timestamp) < cache.ttl then
-    log_debug("Cache hit", { key = key })
-    return entry.result
-  end
-  log_debug("Cache miss", { key = key })
-  return nil
-end
-
-local function cache_result(key, result)
-  cache.data[key] = {
-    result = result,
-    timestamp = vim.uv.now()
+-- Helper to get current position info
+local function get_current_position()
+  local bufnr = vim.api.nvim_get_current_buf()
+  return {
+    file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":."),
+    line = vim.fn.line('.'),
+    col = vim.fn.col('.'),
+    timestamp = vim.uv.now(),
+    bufnr = bufnr
   }
-  log_debug("Cached result", { key = key, has_data = result ~= nil })
 end
 
-local function cleanup_cache()
-  local now = vim.uv.now()
-  local cleaned = 0
-  for key, entry in pairs(cache.data) do
-    if (now - entry.timestamp) > cache.ttl then
-      cache.data[key] = nil
-      cleaned = cleaned + 1
-    end
-  end
-  if cleaned > 0 then
-    log_debug("Cache cleanup", { removed_entries = cleaned })
-  end
-end
-
-local function trim_empty_lines(lines)
-  if not lines then return {} end
-  local trimmed = {}
-  for _, line in ipairs(lines) do
-    if line and line:match("%S") then
-      table.insert(trimmed, line)
-    end
-  end
-  return trimmed
-end
-
-local function format_file_path(uri)
-  if not uri then return "Unknown" end
-  local file_path = vim.uri_to_fname(uri)
-  return vim.fn.fnamemodify(file_path, ":.")
-end
-
-local function get_position_encoding()
+-- Check if LSP is available for current buffer
+local function has_lsp_capability(capability)
   local clients = vim.lsp.get_clients({ bufnr = 0 })
-  if #clients > 0 then
-    return clients[1].offset_encoding or 'utf-16'
-  end
-  return 'utf-16'
-end
-
-local function request_hover(params, callback, config)
-  local bufnr = vim.api.nvim_get_current_buf()
-  local cache_key = make_cache_key(bufnr, params.position.line, params.position.character, "hover")
-  local cached = get_cached_result(cache_key)
-  if cached then
-    callback("hover", cached)
-    return
-  end
-
-  log_debug("Requesting hover info", {
-    buffer = bufnr,
-    line = params.position.line + 1,
-    character = params.position.character + 1
-  })
-
-  local start_time = vim.uv.now()
-
-  vim.lsp.buf_request(bufnr, 'textDocument/hover', params, function(err, result)
-    local duration = vim.uv.now() - start_time
-    local hover_data = {}
-
-    if err then
-      log_error("Hover request failed", {
-        error = err,
-        duration_ms = duration,
-        buffer = bufnr
-      })
-    elseif result and result.contents then
-      local hover_lines = vim.lsp.util.convert_input_to_markdown_lines(result.contents)
-      hover_data = trim_empty_lines(hover_lines)
-      
-      log_debug("Hover request completed", {
-        duration_ms = duration,
-        lines_count = #hover_data,
-        has_content = #hover_data > 0
-      })
-    else
-      log_debug("Hover request returned no content", {
-        duration_ms = duration,
-        result = result
-      })
+  for _, client in ipairs(clients) do
+    if client.server_capabilities[capability] then
+      return true
     end
-
-    cache_result(cache_key, hover_data)
-    callback("hover", hover_data)
-  end)
+  end
+  return false
 end
 
-local function request_definition(params, callback, config)
-  if not config.show_definition_location then
-    callback("definition", nil)
+-- Simplified hover using Neovim's built-in handler
+local function get_hover_info(callback)
+  if not has_lsp_capability('hoverProvider') then
+    callback(nil)
     return
   end
 
-  local bufnr = vim.api.nvim_get_current_buf()
-  local cache_key = make_cache_key(bufnr, params.position.line, params.position.character, "definition")
-
-  local cached = get_cached_result(cache_key)
-  if cached then
-    callback("definition", cached)
-    return
-  end
-
-  log_debug("Requesting definition", {
-    buffer = bufnr,
-    line = params.position.line + 1,
-    character = params.position.character + 1
-  })
-
-  local start_time = vim.uv.now()
-
-  vim.lsp.buf_request(bufnr, 'textDocument/definition', params, function(err, result)
-    local duration = vim.uv.now() - start_time
-    local def_data = nil
+  log_debug("Requesting hover using vim.lsp.buf.hover")
+  
+  -- Capture the hover response by temporarily intercepting the handler
+  local original_handler = vim.lsp.handlers['textDocument/hover']
+  local timeout_timer = nil
+  
+  vim.lsp.handlers['textDocument/hover'] = function(err, result, ctx, config)
+    -- Restore original handler immediately
+    vim.lsp.handlers['textDocument/hover'] = original_handler
     
-    if err then
-      log_error("Definition request failed", {
-        error = err,
-        duration_ms = duration,
-        buffer = bufnr
-      })
-    elseif result and #result > 0 then
-      local def = result[1]
-      if def.uri then
-        def_data = {
-          file = format_file_path(def.uri),
-          line = def.range.start.line + 1,
-          col = def.range.start.character + 1
-        }
-        
-        log_debug("Definition request completed", {
-          duration_ms = duration,
-          file = def_data.file,
-          location = string.format("%d:%d", def_data.line, def_data.col)
-        })
-      else
-        log_warn("Definition result missing URI", {
-          duration_ms = duration,
-          result = def
-        })
+    -- Cancel timeout
+    if timeout_timer then
+      vim.fn.timer_stop(timeout_timer)
+      timeout_timer = nil
+    end
+    
+    if err or not result or not result.contents then
+      log_debug("Hover returned no content")
+      callback(nil)
+      return
+    end
+    
+    -- Use Neovim's built-in markdown conversion
+    local hover_lines = vim.lsp.util.convert_input_to_markdown_lines(result.contents)
+    
+    -- Filter empty lines
+    local filtered_lines = {}
+    for _, line in ipairs(hover_lines) do
+      if line and line:match("%S") then
+        table.insert(filtered_lines, line)
       end
-    else
-      log_debug("Definition request returned no results", {
-        duration_ms = duration,
-        result_count = result and #result or 0
-      })
     end
     
-    cache_result(cache_key, def_data)
-    callback("definition", def_data)
+    log_debug("Hover info retrieved", { lines = #filtered_lines })
+    callback(#filtered_lines > 0 and filtered_lines or nil)
+  end
+  
+  -- Set timeout in case hover never responds
+  timeout_timer = vim.fn.timer_start(2000, function()
+    vim.lsp.handlers['textDocument/hover'] = original_handler
+    log_debug("Hover request timed out")
+    callback(nil)
   end)
+  
+  -- Make the hover request
+  vim.lsp.buf.hover()
 end
 
-local function request_references(params, callback, config)
-  if not config.show_references_count then
-    callback("references", nil)
+-- Simplified definition using Neovim's location handling
+local function get_definition_info(callback)
+  if not has_lsp_capability('definitionProvider') then
+    callback(nil)
     return
   end
+
+  log_debug("Requesting definition using vim.lsp.buf.definition")
   
-  local bufnr = vim.api.nvim_get_current_buf()
-  local cache_key = make_cache_key(bufnr, params.position.line, params.position.character, "references")
-  local cached = get_cached_result(cache_key)
-  if cached then
-    callback("references", cached)
-    return
+  local original_handler = vim.lsp.handlers['textDocument/definition']
+  local timeout_timer = nil
+  
+  vim.lsp.handlers['textDocument/definition'] = function(err, result, ctx, config)
+    vim.lsp.handlers['textDocument/definition'] = original_handler
+    
+    if timeout_timer then
+      vim.fn.timer_stop(timeout_timer)
+      timeout_timer = nil
+    end
+    
+    if err or not result then
+      log_debug("Definition returned no result")
+      callback(nil)
+      return
+    end
+    
+    -- Use Neovim's built-in location utilities
+    local locations = vim.tbl_islist(result) and result or { result }
+    if #locations > 0 then
+      local items = vim.lsp.util.locations_to_items(locations, 'utf-16')
+      if items and #items > 0 then
+        local item = items[1]
+        local def_info = {
+          file = item.filename,
+          line = item.lnum,
+          col = item.col
+        }
+        log_debug("Definition info retrieved", def_info)
+        callback(def_info)
+        return
+      end
+    end
+    
+    callback(nil)
   end
   
-  local ref_params = vim.tbl_extend('force', params, {
-    context = { includeDeclaration = true }
-  })
-
-  log_debug("Requesting references", {
-    buffer = bufnr,
-    line = params.position.line + 1,
-    character = params.position.character + 1,
-    include_declaration = true
-  })
-
-  local start_time = vim.uv.now()
+  timeout_timer = vim.fn.timer_start(2000, function()
+    vim.lsp.handlers['textDocument/definition'] = original_handler
+    log_debug("Definition request timed out")
+    callback(nil)
+  end)
   
-  vim.lsp.buf_request(bufnr, 'textDocument/references', ref_params, function(err, result)
-    local duration = vim.uv.now() - start_time
-    local ref_data = {
-      count = 0,
+  vim.lsp.buf.definition()
+end
+
+-- Simplified references using Neovim's location handling
+local function get_references_info(callback, max_refs)
+  if not has_lsp_capability('referencesProvider') then
+    callback(nil)
+    return
+  end
+
+  log_debug("Requesting references using vim.lsp.buf.references")
+  
+  local original_handler = vim.lsp.handlers['textDocument/references']
+  local timeout_timer = nil
+  
+  vim.lsp.handlers['textDocument/references'] = function(err, result, ctx, config)
+    vim.lsp.handlers['textDocument/references'] = original_handler
+    
+    if timeout_timer then
+      vim.fn.timer_stop(timeout_timer)
+      timeout_timer = nil
+    end
+    
+    if err or not result then
+      log_debug("References returned no result")
+      callback(nil)
+      return
+    end
+    
+    -- Use Neovim's built-in location utilities
+    local items = vim.lsp.util.locations_to_items(result, 'utf-16')
+    
+    local ref_info = {
+      count = #items,
       locations = {}
     }
     
-    if err then
-      log_error("References request failed", {
-        error = err,
-        duration_ms = duration,
-        buffer = bufnr
-      })
-    elseif result then
-      ref_data.count = #result
-      
-      for i, ref in ipairs(result) do
-        if i <= config.max_references_shown and ref.uri then
-          table.insert(ref_data.locations, {
-            file = format_file_path(ref.uri),
-            line = ref.range.start.line + 1,
-            col = ref.range.start.character + 1
-          })
-        end
-      end
-      
-      if #result > config.max_references_shown then
-        ref_data.more_count = #result - config.max_references_shown
-      end
-
-      log_debug("References request completed", {
-        duration_ms = duration,
-        total_count = ref_data.count,
-        displayed_count = #ref_data.locations,
-        more_count = ref_data.more_count or 0
-      })
-    else
-      log_debug("References request returned no results", {
-        duration_ms = duration
+    -- Convert to our format, respecting max_refs
+    local limit = math.min(#items, max_refs or 8)
+    for i = 1, limit do
+      local item = items[i]
+      table.insert(ref_info.locations, {
+        file = item.filename,
+        line = item.lnum,
+        col = item.col
       })
     end
-
-    cache_result(cache_key, ref_data)
-    callback("references", ref_data)
+    
+    if #items > limit then
+      ref_info.more_count = #items - limit
+    end
+    
+    log_debug("References info retrieved", { 
+      total = ref_info.count, 
+      displayed = #ref_info.locations 
+    })
+    callback(ref_info)
+  end
+  
+  timeout_timer = vim.fn.timer_start(2000, function()
+    vim.lsp.handlers['textDocument/references'] = original_handler
+    log_debug("References request timed out")
+    callback(nil)
   end)
+  
+  vim.lsp.buf.references()
 end
 
-local function request_type_definition(params, callback, config)
-  if not config.show_type_info then
-    callback("type_definition", nil)
+-- Simplified type definition
+local function get_type_definition_info(callback)
+  if not has_lsp_capability('typeDefinitionProvider') then
+    callback(nil)
     return
   end
 
-  local bufnr = vim.api.nvim_get_current_buf()
-  local cache_key = make_cache_key(bufnr, params.position.line, params.position.character, "type_definition")
-
-  local cached = get_cached_result(cache_key)
-  if cached then
-    callback("type_definition", cached)
-    return
-  end
-
-  log_debug("Requesting type definition", {
-    buffer = bufnr,
-    line = params.position.line + 1,
-    character = params.position.character + 1
-  })
-
-  local start_time = vim.uv.now()
-
-  vim.lsp.buf_request(bufnr, 'textDocument/typeDefinition', params, function(err, result)
-    local duration = vim.uv.now() - start_time
-    local type_data = nil
-
-    if err then
-      log_error("Type definition request failed", {
-        error = err,
-        duration_ms = duration,
-        buffer = bufnr
-      })
-    elseif result and #result > 0 then
-      local type_def = result[1]
-      if type_def.uri then
-        type_data = {
-          file = format_file_path(type_def.uri),
-          line = type_def.range.start.line + 1,
-          col = type_def.range.start.character + 1
+  log_debug("Requesting type definition using vim.lsp.buf.type_definition")
+  
+  local original_handler = vim.lsp.handlers['textDocument/typeDefinition']
+  local timeout_timer = nil
+  
+  vim.lsp.handlers['textDocument/typeDefinition'] = function(err, result, ctx, config)
+    vim.lsp.handlers['textDocument/typeDefinition'] = original_handler
+    
+    if timeout_timer then
+      vim.fn.timer_stop(timeout_timer)
+      timeout_timer = nil
+    end
+    
+    if err or not result then
+      log_debug("Type definition returned no result")
+      callback(nil)
+      return
+    end
+    
+    local locations = vim.tbl_islist(result) and result or { result }
+    if #locations > 0 then
+      local items = vim.lsp.util.locations_to_items(locations, 'utf-16')
+      if items and #items > 0 then
+        local item = items[1]
+        local type_info = {
+          file = item.filename,
+          line = item.lnum,
+          col = item.col
         }
-        
-        log_debug("Type definition request completed", {
-          duration_ms = duration,
-          file = type_data.file,
-          location = string.format("%d:%d", type_data.line, type_data.col)
-        })
-      else
-        log_warn("Type definition result missing URI", {
-          duration_ms = duration,
-          result = type_def
-        })
+        log_debug("Type definition info retrieved", type_info)
+        callback(type_info)
+        return
       end
-    else
-      log_debug("Type definition request returned no results", {
-        duration_ms = duration,
-        result_count = result and #result or 0
-      })
     end
-
-    cache_result(cache_key, type_data)
-    callback("type_definition", type_data)
+    
+    callback(nil)
+  end
+  
+  timeout_timer = vim.fn.timer_start(2000, function()
+    vim.lsp.handlers['textDocument/typeDefinition'] = original_handler
+    log_debug("Type definition request timed out")
+    callback(nil)
   end)
+  
+  vim.lsp.buf.type_definition()
 end
 
--- Main function to gather all context information
+-- Main function - much simpler now!
 function M.gather_context_info(completion_callback, config)
-  local position_encoding = get_position_encoding()
-  local params = vim.lsp.util.make_position_params(0, position_encoding)
-
-  log_debug("Starting LSP context collection", {
-    buffer = vim.api.nvim_get_current_buf(),
-    filetype = vim.bo.filetype,
-    position = params.position,
-    encoding = position_encoding,
-    config = config
+  -- Check if any LSP clients are available
+  local clients = vim.lsp.get_clients({ bufnr = 0 })
+  if #clients == 0 then
+    log_debug("No LSP clients available")
+    completion_callback(nil)
+    return
+  end
+  
+  log_debug("Gathering LSP context info", { 
+    clients = vim.tbl_map(function(c) return c.name end, clients),
+    config = config 
   })
-
-  -- Current file information
-  local context_data = {
-    file = format_file_path(vim.uri_from_bufnr(0)),
-    line = vim.fn.line('.'),
-    col = vim.fn.col('.'),
-    timestamp = vim.uv.now()
-  }
-
+  
+  -- Get current position
+  local context_data = get_current_position()
+  
+  -- Track pending requests
   local pending_requests = 0
-  local start_time = vim.uv.now()
-  local request_results = {}
-
   local function start_request()
     pending_requests = pending_requests + 1
   end
-
-  local function complete_request(data_type, data)
+  
+  local function complete_request(request_type, data)
     pending_requests = pending_requests - 1
-    request_results[data_type] = data
-
-    log_debug("LSP request completed", {
-      type = data_type,
-      pending = pending_requests,
-      has_data = data ~= nil
-    })
-
-    if data_type == "hover" then
+    
+    -- Add data to context
+    if request_type == "hover" then
       context_data.hover = data
-    elseif data_type == "definition" then
+    elseif request_type == "definition" then
       context_data.definition = data
-    elseif data_type == "references" then
+    elseif request_type == "references" then
       if data then
         context_data.references_count = data.count
         context_data.references = data.locations
-        if data.more_count then
-          context_data.references_more = data.more_count
-        end
+        context_data.references_more = data.more_count
       end
-    elseif data_type == "type_definition" then
+    elseif request_type == "type_definition" then
       context_data.type_definition = data
     end
-
+    
+    -- Call completion callback when all requests done
     if pending_requests == 0 then
-      local total_duration = vim.uv.now() - start_time
-      
-      log_debug("LSP context collection completed", {
-        total_duration_ms = total_duration,
-        requests_completed = vim.tbl_count(request_results),
-        has_hover = context_data.hover and #context_data.hover > 0,
-        has_definition = context_data.definition ~= nil,
-        references_count = context_data.references_count or 0,
-        has_type_def = context_data.type_definition ~= nil
-      })
-      
-      cleanup_cache()
+      log_debug("All LSP requests completed")
       completion_callback(context_data)
     end
   end
-
-  -- Check if we have any LSP clients before making requests
-  local clients = vim.lsp.get_clients({ bufnr = 0 })
-  if #clients == 0 then
-    log_warn("No LSP clients available for context collection")
+  
+  -- Make requests for enabled features only
+  if config.show_hover then
+    start_request()
+    get_hover_info(function(data) complete_request("hover", data) end)
+  end
+  
+  if config.show_definition then
+    start_request()
+    get_definition_info(function(data) complete_request("definition", data) end)
+  end
+  
+  if config.show_references then
+    start_request()
+    get_references_info(function(data) complete_request("references", data) end, config.max_references or 8)
+  end
+  
+  if config.show_type_info then
+    start_request()
+    get_type_definition_info(function(data) complete_request("type_definition", data) end)
+  end
+  
+  -- If no requests were made, call completion immediately
+  if pending_requests == 0 then
+    log_debug("No LSP requests needed")
     completion_callback(context_data)
-    return
   end
-
-  log_debug("Found LSP clients", {
-    count = #clients,
-    clients = vim.tbl_map(function(c) return c.name end, clients)
-  })
-
-  -- Start all requests
-  start_request()
-  request_hover(params, complete_request, config)
-
-  start_request()
-  request_definition(params, complete_request, config)
-
-  start_request()
-  request_references(params, complete_request, config)
-
-  start_request()
-  request_type_definition(params, complete_request, config)
-
-  -- Timeout fallback in case requests hang
-  vim.defer_fn(function()
-    if pending_requests > 0 then
-      log_warn("LSP requests timed out", {
-        pending_requests = pending_requests,
-        duration_ms = vim.uv.now() - start_time,
-        completed = request_results
-      })
-      completion_callback(context_data)
-    end
-  end, 5000)
 end
 
--- Get symbol under cursor (simpler version for quick checks)
+-- Simple symbol getter
 function M.get_symbol_at_cursor()
-  local position_encoding = get_position_encoding()
-  local params = vim.lsp.util.make_position_params(0, position_encoding)
-  local bufnr = vim.api.nvim_get_current_buf()
-
   local word = vim.fn.expand('<cword>')
   if not word or word == '' then
-    log_debug("No symbol under cursor")
     return nil
   end
-
-  log_debug("Symbol under cursor", {
-    word = word,
-    buffer = bufnr,
-    position = params.position
-  })
-
-  return {
-    word = word,
-    file = format_file_path(vim.uri_from_bufnr(bufnr)),
-    line = params.position.line + 1,
-    col = params.position.character + 1,
-  }
-end
-
--- Clear cache
-function M.clear_cache()
-  local cache_size = vim.tbl_count(cache.data)
-  cache.data = {}
-  log_info("Cache cleared", { removed_entries = cache_size })
-end
-
--- Get cache statistics
-function M.get_cache_stats()
-  local now = vim.uv.now()
-  local valid_entries = 0
-  local expired_entries = 0
   
-  for _, entry in pairs(cache.data) do
-    if (now - entry.timestamp) < cache.ttl then
-      valid_entries = valid_entries + 1
-    else
-      expired_entries = expired_entries + 1
-    end
-  end
-
+  local pos = get_current_position()
   return {
-    total_entries = vim.tbl_count(cache.data),
-    valid_entries = valid_entries,
-    expired_entries = expired_entries,
-    ttl_ms = cache.ttl
+    word = word,
+    file = pos.file,
+    line = pos.line,
+    col = pos.col,
   }
 end
 

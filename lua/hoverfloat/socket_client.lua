@@ -1,4 +1,3 @@
--- lua/hoverfloat/socket_client.lua - Persistent connection version with fast event fixes
 local M = {}
 local uv = vim.uv or vim.loop
 
@@ -55,7 +54,7 @@ local function log_connection_event(event, details)
   if details then
     log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
   end
-  
+
   vim.schedule(function()
     if config.debug then
       vim.notify(log_msg, vim.log.levels.DEBUG)
@@ -69,7 +68,7 @@ local function log_error(event, details)
   if details then
     log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
   end
-  
+
   vim.schedule(function()
     vim.notify(log_msg, vim.log.levels.ERROR)
   end)
@@ -81,7 +80,7 @@ local function log_warn(event, details)
   if details then
     log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
   end
-  
+
   vim.schedule(function()
     vim.notify(log_msg, vim.log.levels.WARN)
   end)
@@ -93,7 +92,7 @@ local function log_info(event, details)
   if details then
     log_msg = log_msg .. ": " .. (type(details) == "table" and vim.inspect(details) or tostring(details))
   end
-  
+
   vim.schedule(function()
     vim.notify(log_msg, vim.log.levels.INFO)
   end)
@@ -136,24 +135,34 @@ end
 
 -- Handle connection failure
 local function handle_connection_failure(reason)
+  -- Check if this is a spurious timeout due to timer race condition
+  local is_timer_race_condition = reason:match("Connection timeout") and state.connected
+
   log_error("Connection failed", {
     reason = reason,
     attempt = state.connection_attempts + 1,
     max_attempts = config.max_connection_attempts,
-    socket_path = state.socket_path
+    socket_path = state.socket_path,
+    currently_connected = state.connected,
+    is_spurious_timeout = is_timer_race_condition
   })
+
   cleanup_connection()
 
-  state.connection_attempts = state.connection_attempts + 1
+  -- Don't increment attempts for spurious timeouts
+  if not is_timer_race_condition then
+    state.connection_attempts = state.connection_attempts + 1
+  else
+    log_warn("Ignoring spurious timeout - connection was actually successful")
+    return
+  end
 
   if state.connection_attempts >= config.max_connection_attempts then
     log_error("Max connection attempts reached", {
       attempts = state.connection_attempts,
       giving_up = true
     })
-    vim.schedule(function()
-      vim.notify("HoverFloat: Max connection attempts reached. Stopping reconnection.", vim.log.levels.ERROR)
-    end)
+    -- Don't show disruptive notification, just log it
     return
   end
 
@@ -183,27 +192,6 @@ function schedule_reconnect()
       create_connection()
     end)
   end)
-end
-
--- Handle incoming data from socket
-local function handle_incoming_data(data)
-  if not data then return end
-
-  -- Append to buffer
-  state.incoming_buffer = state.incoming_buffer .. data
-
-  -- Process complete lines (newline-delimited messages)
-  while true do
-    local newline_pos = state.incoming_buffer:find('\n')
-    if not newline_pos then break end
-
-    local line = state.incoming_buffer:sub(1, newline_pos - 1)
-    state.incoming_buffer = state.incoming_buffer:sub(newline_pos + 1)
-
-    if line ~= "" then
-      handle_message(line)
-    end
-  end
 end
 
 -- Handle parsed message
@@ -237,13 +225,32 @@ local function handle_message(json_str)
       error_msg = message.data.error
     end
     log_error("TUI reported error", error_msg)
-    vim.schedule(function()
-      vim.notify("HoverFloat TUI Error: " .. error_msg, vim.log.levels.ERROR)
-    end)
+    -- Don't show disruptive notification for TUI errors
   elseif message.type == "status" then
     log_connection_event("Status update from TUI", message.data)
   else
     log_warn("Unknown message type received", message.type)
+  end
+end
+
+-- Handle incoming data from socket
+local function handle_incoming_data(data)
+  if not data then return end
+
+  -- Append to buffer
+  state.incoming_buffer = state.incoming_buffer .. data
+
+  -- Process complete lines (newline-delimited messages)
+  while true do
+    local newline_pos = state.incoming_buffer:find('\n')
+    if not newline_pos then break end
+
+    local line = state.incoming_buffer:sub(1, newline_pos - 1)
+    state.incoming_buffer = state.incoming_buffer:sub(newline_pos + 1)
+
+    if line ~= "" then
+      handle_message(line)
+    end
   end
 end
 
@@ -393,7 +400,7 @@ function create_connection()
     max_attempts = config.max_connection_attempts,
     socket_path = state.socket_path
   })
-  
+
   state.connecting = true
 
   local socket = uv.new_pipe(false)
@@ -402,30 +409,64 @@ function create_connection()
     return
   end
 
+  -- Create a connection timeout with proper cleanup tracking
+  local timeout_timer = nil
+  local connection_completed = false
+
+  -- Helper function to safely cancel timeout
+  local function cancel_timeout()
+    if timeout_timer and not connection_completed then
+      connection_completed = true
+      log_connection_event("Cancelling connection timeout timer", { timer_id = timeout_timer })
+
+      vim.schedule(function()
+        if timeout_timer then
+          vim.fn.timer_stop(timeout_timer)
+          timeout_timer = nil
+        end
+      end)
+    end
+  end
+
   -- Set up connection timeout using vim.schedule
-  local timeout_timer
   vim.schedule(function()
-    timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
-      log_error("Connection timeout", {
-        timeout_ms = config.connection_timeout,
-        attempt = state.connection_attempts + 1
+    if not connection_completed then
+      timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
+        if not connection_completed then
+          connection_completed = true
+          log_error("Connection timeout fired", {
+            timeout_ms = config.connection_timeout,
+            attempt = state.connection_attempts + 1,
+            connecting = state.connecting,
+            connected = state.connected
+          })
+
+          if socket and not socket:is_closing() then
+            socket:close()
+          end
+          state.connecting = false
+          handle_connection_failure("Connection timeout")
+        else
+          log_connection_event("Timeout timer fired after connection completed - ignoring")
+        end
+      end)
+
+      log_connection_event("Connection timeout timer started", {
+        timer_id = timeout_timer,
+        timeout_ms = config.connection_timeout
       })
-      if socket and not socket:is_closing() then
-        socket:close()
-      end
-      state.connecting = false
-      handle_connection_failure("Connection timeout")
-    end)
+    end
   end)
 
   -- Attempt connection
   socket:connect(state.socket_path, function(err)
-    -- Cancel timeout timer
-    if timeout_timer then
-      vim.schedule(function()
-        vim.fn.timer_stop(timeout_timer)
-      end)
-    end
+    log_connection_event("Connection callback triggered", {
+      error = err and tostring(err) or "none",
+      connection_completed = connection_completed
+    })
+
+    -- Cancel timeout timer immediately
+    cancel_timeout()
 
     if err then
       log_error("Connection failed", {
@@ -447,7 +488,8 @@ function create_connection()
 
     log_info("Socket connection established", {
       socket_path = state.socket_path,
-      attempts_required = state.connection_attempts
+      attempts_required = state.connection_attempts,
+      timeout_cancelled = connection_completed
     })
 
     -- Set up read handler
@@ -477,10 +519,8 @@ function create_connection()
     -- Flush queued messages
     flush_message_queue()
 
-    -- Notify user
-    vim.schedule(function()
-      vim.notify("HoverFloat: Connected to context window", vim.log.levels.INFO)
-    end)
+    -- Log successful connection (non-disruptive)
+    log_info("Connected to context window successfully")
   end)
 end
 
@@ -555,9 +595,7 @@ function M.disconnect()
     reset_attempts = true
   })
 
-  vim.schedule(function()
-    vim.notify("HoverFloat: Disconnected from context window", vim.log.levels.INFO)
-  end)
+  -- Log disconnection (non-disruptive)
 end
 
 function M.send_context_update(context_data)
