@@ -1,180 +1,212 @@
-# Makefile for nvim-hoverfloat
+# Makefile for nvim-context-tui
 
-.PHONY: build install clean lint format help
+.PHONY: build build-debug install install-debug install-no-stop install-debug-no-stop clean stop-processes copy-binary stop help status
 
 # Configuration
 BINARY_NAME := nvim-context-tui
+DEBUG_BINARY_NAME := nvim-context-tui-debug
 BUILD_DIR := build
+DEBUG_BUILD_DIR := build/debug
 INSTALL_DIR := $(HOME)/.local/bin
 
 # Go build flags
-GO_BUILD_FLAGS := -ldflags="-s -w" -trimpath
-GO_VERSION := 1.23
+GO_PROD_FLAGS := -ldflags="-s -w" -trimpath
+GO_DEBUG_FLAGS := -gcflags="all=-N -l" -ldflags="-X main.DebugMode=true"
+
+# Process management timeouts
+GRACEFUL_TIMEOUT := 10
+INTERMEDIATE_TIMEOUT := 5
+FORCE_TIMEOUT := 3
+
+# Colors
+RED := \033[31m
+GREEN := \033[32m
+YELLOW := \033[33m
+BLUE := \033[34m
+CYAN := \033[36m
+RESET := \033[0m
 
 # Default target
 all: build
 
-# Build production binary
+# Production build
 build:
-	@echo "🔨 Building $(BINARY_NAME)..."
+	@printf "$(BLUE)Building $(BINARY_NAME) (production)...$(RESET)\n"
 	@mkdir -p $(BUILD_DIR)
-	@cd cmd/context-tui && go build $(GO_BUILD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) .
-	@echo "✅ Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
+	@cd cmd/context-tui && go build $(GO_PROD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) .
+	@printf "$(GREEN)Production build complete: $(BUILD_DIR)/$(BINARY_NAME)$(RESET)\n"
 
-# Development install - same as regular install but with clearer name
-install-dev: install
+# Debug build
+build-debug:
+	@printf "$(BLUE)Building $(DEBUG_BINARY_NAME) (debug)...$(RESET)\n"
+	@mkdir -p $(DEBUG_BUILD_DIR)
+	@cd cmd/context-tui && go build $(GO_DEBUG_FLAGS) -o ../../$(DEBUG_BUILD_DIR)/$(DEBUG_BINARY_NAME) .
+	@printf "$(GREEN)Debug build complete: $(DEBUG_BUILD_DIR)/$(DEBUG_BINARY_NAME)$(RESET)\n"
 
-# Install binary to user's local bin (automatically stops running processes)
+# Install production binary
 install: build
-	@echo "📦 Installing $(BINARY_NAME) to $(INSTALL_DIR)..."
+	@printf "$(BLUE)Installing $(BINARY_NAME) to $(INSTALL_DIR)...$(RESET)\n"
 	@mkdir -p $(INSTALL_DIR)
-	@if [ -f "$(INSTALL_DIR)/$(BINARY_NAME)" ]; then \
-		echo "🔄 Gracefully stopping $(BINARY_NAME) processes..."; \
-		pgrep -f "^$(INSTALL_DIR)/$(BINARY_NAME)" | head -10 | xargs -r kill -TERM 2>/dev/null || true; \
-		sleep 1; \
-		pgrep -f "^$(INSTALL_DIR)/$(BINARY_NAME)" | head -10 | xargs -r kill -KILL 2>/dev/null || true; \
-		sleep 1; \
+	@$(MAKE) stop-processes BINARY_TARGET=$(BINARY_NAME)
+	@$(MAKE) copy-binary SOURCE=$(BUILD_DIR)/$(BINARY_NAME) TARGET=$(INSTALL_DIR)/$(BINARY_NAME)
+	@printf "$(GREEN)Production binary installed$(RESET)\n"
+
+# Install debug binary
+install-debug: build-debug
+	@printf "$(BLUE)Installing $(DEBUG_BINARY_NAME) to $(INSTALL_DIR)...$(RESET)\n"
+	@mkdir -p $(INSTALL_DIR)
+	@$(MAKE) stop-processes BINARY_TARGET=$(DEBUG_BINARY_NAME)
+	@$(MAKE) copy-binary SOURCE=$(DEBUG_BUILD_DIR)/$(DEBUG_BINARY_NAME) TARGET=$(INSTALL_DIR)/$(DEBUG_BINARY_NAME)
+	@printf "$(GREEN)Debug binary installed$(RESET)\n"
+
+# Controlled process stopping
+stop-processes:
+	@if [ -z "$(BINARY_TARGET)" ]; then \
+		printf "$(RED)Error: BINARY_TARGET not specified$(RESET)\n"; \
+		exit 1; \
 	fi
-	@for i in 1 2 3; do \
-		if cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME).tmp 2>/dev/null; then \
-			mv $(INSTALL_DIR)/$(BINARY_NAME).tmp $(INSTALL_DIR)/$(BINARY_NAME) && break; \
-		else \
-			echo "⚠️  Binary still in use, waiting (attempt $$i/3)..."; \
-			if [ $$i -eq 3 ]; then \
-				echo "❌ Failed to install after 3 attempts. Please manually stop $(BINARY_NAME) processes and retry."; \
-				exit 1; \
+	@printf "$(CYAN)Checking for running $(BINARY_TARGET) processes...$(RESET)\n"
+	@PIDS=$$(pgrep -x "$(BINARY_TARGET)" 2>/dev/null || true); \
+	if [ -n "$$PIDS" ]; then \
+		printf "$(YELLOW)Found processes: $$PIDS$(RESET)\n"; \
+		printf "$(CYAN)Sending TERM signal...$(RESET)\n"; \
+		echo "$$PIDS" | xargs -r kill -TERM 2>/dev/null || true; \
+		printf "$(CYAN)Waiting $(GRACEFUL_TIMEOUT) seconds for graceful shutdown...$(RESET)\n"; \
+		for i in $$(seq 1 $(GRACEFUL_TIMEOUT)); do \
+			sleep 1; \
+			REMAINING=$$(pgrep -x "$(BINARY_TARGET)" 2>/dev/null || true); \
+			if [ -z "$$REMAINING" ]; then \
+				printf "$(GREEN)All processes stopped gracefully$(RESET)\n"; \
+				exit 0; \
 			fi; \
-			sleep 2; \
+		done; \
+		REMAINING=$$(pgrep -x "$(BINARY_TARGET)" 2>/dev/null || true); \
+		if [ -n "$$REMAINING" ]; then \
+			printf "$(YELLOW)Processes still running, sending INT signal...$(RESET)\n"; \
+			echo "$$REMAINING" | xargs -r kill -INT 2>/dev/null || true; \
+			sleep $(INTERMEDIATE_TIMEOUT); \
+			REMAINING=$$(pgrep -x "$(BINARY_TARGET)" 2>/dev/null || true); \
+			if [ -n "$$REMAINING" ]; then \
+				printf "$(YELLOW)Force killing remaining processes...$(RESET)\n"; \
+				echo "$$REMAINING" | xargs -r kill -KILL 2>/dev/null || true; \
+				sleep $(FORCE_TIMEOUT); \
+				FINAL=$$(pgrep -x "$(BINARY_TARGET)" 2>/dev/null || true); \
+				if [ -n "$$FINAL" ]; then \
+					printf "$(RED)Failed to stop processes: $$FINAL$(RESET)\n"; \
+					exit 1; \
+				fi; \
+			fi; \
 		fi; \
-	done
-	@chmod +x $(INSTALL_DIR)/$(BINARY_NAME)
-	@echo "✅ Installed to $(INSTALL_DIR)/$(BINARY_NAME)"
-	@echo "💡 Make sure $(INSTALL_DIR) is in your PATH"
-
-# Lint Go code
-lint:
-	@echo "🔍 Linting Go code..."
-	@if command -v golangci-lint >/dev/null 2>&1 || [ -x "$(HOME)/go/bin/golangci-lint" ]; then \
-		LINTER=$$(command -v golangci-lint || echo "$(HOME)/go/bin/golangci-lint"); \
-		(cd cmd/context-tui && $$LINTER run ./... || true); \
+		printf "$(GREEN)All processes stopped$(RESET)\n"; \
 	else \
-		echo "⚠️  golangci-lint not found, using go vet"; \
-		(cd cmd/context-tui && go vet ./...); \
+		printf "$(GREEN)No processes found$(RESET)\n"; \
 	fi
-	@echo "✅ Linting complete"
 
-# Format Go code
-format:
-	@echo "🎨 Formatting Go code..."
-	@gofmt -s -w ./cmd/context-tui/
-	@if command -v goimports >/dev/null 2>&1; then \
-		goimports -w ./cmd/context-tui/; \
+# Safe binary copying with retries
+copy-binary:
+	@if [ -z "$(SOURCE)" ] || [ -z "$(TARGET)" ]; then \
+		printf "$(RED)Error: SOURCE and TARGET must be specified$(RESET)\n"; \
+		exit 1; \
 	fi
-	@echo "✅ Formatting complete"
+	@if [ ! -f "$(SOURCE)" ]; then \
+		printf "$(RED)Error: Source file not found: $(SOURCE)$(RESET)\n"; \
+		exit 1; \
+	fi
+	@printf "$(CYAN)Copying $(SOURCE) to $(TARGET)...$(RESET)\n"
+	@for i in 1 2 3; do \
+		if cp "$(SOURCE)" "$(TARGET).tmp" 2>/dev/null; then \
+			if mv "$(TARGET).tmp" "$(TARGET)" 2>/dev/null; then \
+				chmod +x "$(TARGET)"; \
+				printf "$(GREEN)Binary copied successfully$(RESET)\n"; \
+				break; \
+			fi; \
+		fi; \
+		if [ $$i -eq 3 ]; then \
+			printf "$(RED)Failed to install after 3 attempts$(RESET)\n"; \
+			rm -f "$(TARGET).tmp"; \
+			exit 1; \
+		fi; \
+		printf "$(YELLOW)Retry $$i failed, waiting 2 seconds...$(RESET)\n"; \
+		sleep 2; \
+	done
+
+# Install without stopping processes (for development)
+install-no-stop: build
+	@printf "$(BLUE)Installing $(BINARY_NAME) (no process stop)...$(RESET)\n"
+	@mkdir -p $(INSTALL_DIR)
+	@$(MAKE) copy-binary SOURCE=$(BUILD_DIR)/$(BINARY_NAME) TARGET=$(INSTALL_DIR)/$(BINARY_NAME)
+	@printf "$(GREEN)Production binary installed$(RESET)\n"
+
+install-debug-no-stop: build-debug
+	@printf "$(BLUE)Installing $(DEBUG_BINARY_NAME) (no process stop)...$(RESET)\n"
+	@mkdir -p $(INSTALL_DIR)
+	@$(MAKE) copy-binary SOURCE=$(DEBUG_BUILD_DIR)/$(DEBUG_BINARY_NAME) TARGET=$(INSTALL_DIR)/$(DEBUG_BINARY_NAME)
+	@printf "$(GREEN)Debug binary installed$(RESET)\n"
+
+# Stop all processes (gentle)
+stop:
+	@printf "$(CYAN)Stopping all nvim-context-tui processes...$(RESET)\n"
+	@PIDS=$$(pgrep -f "nvim-context-tui" 2>/dev/null || true); \
+	if [ -n "$$PIDS" ]; then \
+		printf "$(YELLOW)Found processes: $$PIDS$(RESET)\n"; \
+		echo "$$PIDS" | xargs -r kill -TERM 2>/dev/null || true; \
+		printf "$(GREEN)TERM signal sent$(RESET)\n"; \
+	else \
+		printf "$(GREEN)No processes found$(RESET)\n"; \
+	fi
+
+# Show current build status
+status:
+	@printf "$(BLUE)Build Status:$(RESET)\n"
+	@echo "============="
+	@echo "Production binary: $(BUILD_DIR)/$(BINARY_NAME)"
+	@if [ -f "$(BUILD_DIR)/$(BINARY_NAME)" ]; then \
+		printf "  $(GREEN)Built: $$(date -r $(BUILD_DIR)/$(BINARY_NAME) '+%Y-%m-%d %H:%M:%S')$(RESET)\n"; \
+	else \
+		printf "  $(RED)Not built$(RESET)\n"; \
+	fi
+	@echo "Debug binary: $(DEBUG_BUILD_DIR)/$(DEBUG_BINARY_NAME)"
+	@if [ -f "$(DEBUG_BUILD_DIR)/$(DEBUG_BINARY_NAME)" ]; then \
+		printf "  $(GREEN)Built: $$(date -r $(DEBUG_BUILD_DIR)/$(DEBUG_BINARY_NAME) '+%Y-%m-%d %H:%M:%S')$(RESET)\n"; \
+	else \
+		printf "  $(RED)Not built$(RESET)\n"; \
+	fi
+	@echo "Installed binaries:"
+	@if [ -f "$(INSTALL_DIR)/$(BINARY_NAME)" ]; then \
+		printf "  $(GREEN)Production: $(INSTALL_DIR)/$(BINARY_NAME)$(RESET)\n"; \
+	else \
+		printf "  $(RED)Production: Not installed$(RESET)\n"; \
+	fi
+	@if [ -f "$(INSTALL_DIR)/$(DEBUG_BINARY_NAME)" ]; then \
+		printf "  $(GREEN)Debug: $(INSTALL_DIR)/$(DEBUG_BINARY_NAME)$(RESET)\n"; \
+	else \
+		printf "  $(RED)Debug: Not installed$(RESET)\n"; \
+	fi
 
 # Clean build artifacts
 clean:
-	@echo "🧹 Cleaning build artifacts..."
+	@printf "$(CYAN)Cleaning build artifacts...$(RESET)\n"
 	@rm -rf $(BUILD_DIR)
-	@echo "✅ Clean complete"
-
-# Clean and rebuild everything
-rebuild: clean build
-
-# Check Go version
-check-go:
-	@echo "🔍 Checking Go version..."
-	@go version
-	@if ! go version | grep -q "go$(GO_VERSION)"; then \
-		echo "⚠️  Warning: This project is designed for Go $(GO_VERSION)"; \
-	fi
-
-# Initialize go modules
-mod-tidy:
-	@echo "📦 Tidying Go modules..."
-	@cd cmd/context-tui && go mod tidy
-	@echo "✅ Modules tidied"
-
-# Download dependencies
-deps:
-	@echo "📥 Downloading dependencies..."
-	@cd cmd/context-tui && go mod download
-	@echo "✅ Dependencies downloaded"
-
-# Build for multiple platforms
-build-all:
-	@echo "🌍 Building for multiple platforms..."
-	@mkdir -p $(BUILD_DIR)
-	
-	@echo "  • Building for Linux (amd64)..."
-	@cd cmd/context-tui && GOOS=linux GOARCH=amd64 go build $(GO_BUILD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 .
-	
-	@echo "  • Building for macOS (amd64)..."
-	@cd cmd/context-tui && GOOS=darwin GOARCH=amd64 go build $(GO_BUILD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 .
-	
-	@echo "  • Building for macOS (arm64)..."
-	@cd cmd/context-tui && GOOS=darwin GOARCH=arm64 go build $(GO_BUILD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 .
-	
-	@echo "  • Building for Windows (amd64)..."
-	@cd cmd/context-tui && GOOS=windows GOARCH=amd64 go build $(GO_BUILD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe .
-	
-	@echo "✅ Multi-platform build complete"
-
-# Package releases
-package: build-all
-	@echo "📦 Creating release packages..."
-	@mkdir -p $(BUILD_DIR)/releases
-	
-	@cd $(BUILD_DIR) && tar -czf releases/$(BINARY_NAME)-linux-amd64.tar.gz $(BINARY_NAME)-linux-amd64
-	@cd $(BUILD_DIR) && tar -czf releases/$(BINARY_NAME)-darwin-amd64.tar.gz $(BINARY_NAME)-darwin-amd64
-	@cd $(BUILD_DIR) && tar -czf releases/$(BINARY_NAME)-darwin-arm64.tar.gz $(BINARY_NAME)-darwin-arm64
-	@cd $(BUILD_DIR) && zip -q releases/$(BINARY_NAME)-windows-amd64.zip $(BINARY_NAME)-windows-amd64.exe
-	
-	@echo "✅ Release packages created in $(BUILD_DIR)/releases/"
-
-# Check if required tools are installed
-check-tools:
-	@echo "🔧 Checking required tools..."
-	@command -v go >/dev/null 2>&1 || { echo "❌ Go is required but not installed"; exit 1; }
-	@command -v git >/dev/null 2>&1 || { echo "❌ Git is required but not installed"; exit 1; }
-	@command -v make >/dev/null 2>&1 || { echo "❌ Make is required but not installed"; exit 1; }
-	
-	@echo "🔧 Checking optional tools..."
-	@command -v golangci-lint >/dev/null 2>&1 || echo "⚠️  golangci-lint not found (optional but recommended)"
-	@command -v goimports >/dev/null 2>&1 || echo "⚠️  goimports not found (optional but recommended)"
-	@command -v kitty >/dev/null 2>&1 || echo "⚠️  kitty terminal not found (required for runtime)"
-	
-	@echo "✅ Tool check complete"
+	@printf "$(GREEN)Clean complete$(RESET)\n"
 
 # Show help
 help:
-	@echo "nvim-hoverfloat Build System"
-	@echo "============================"
+	@printf "$(BLUE)nvim-context-tui Build System$(RESET)\n"
 	@echo ""
-	@echo "Production targets:"
-	@echo "  build          Build the TUI binary"
-	@echo "  install        Install binary to ~/.local/bin"
-	@echo "  clean          Clean build artifacts"
-	@echo "  rebuild        Clean and rebuild"
+	@printf "$(CYAN)Build:$(RESET)\n"
+	@echo "  build                  Build production binary"
+	@echo "  build-debug            Build debug binary"
+	@echo "  clean                  Clean build artifacts"
 	@echo ""
-	@echo "Quality targets:"
-	@echo "  test           Run all tests"
-	@echo "  lint           Lint Go code"
-	@echo "  format         Format Go code"
+	@printf "$(CYAN)Install:$(RESET)\n"
+	@echo "  install                Install production binary (stops processes)"
+	@echo "  install-debug          Install debug binary (stops processes)"
+	@echo "  install-no-stop        Install production without stopping processes"
+	@echo "  install-debug-no-stop  Install debug without stopping processes"
 	@echo ""
-	@echo "Release targets:"
-	@echo "  build-all      Build for multiple platforms"
-	@echo "  package        Create release packages"
+	@printf "$(CYAN)Process Management:$(RESET)\n"
+	@echo "  stop                   Stop all processes (TERM signal)"
 	@echo ""
-	@echo "Utility targets:"
-	@echo "  deps           Download dependencies"
-	@echo "  mod-tidy       Tidy Go modules"
-	@echo "  check-go       Check Go version"
-	@echo "  check-tools    Check required tools"
-	@echo "  help           Show this help"
-	@echo ""
-	@echo "Configuration:"
-	@echo "  BINARY_NAME    = $(BINARY_NAME)"
-	@echo "  BUILD_DIR      = $(BUILD_DIR)"
-	@echo "  INSTALL_DIR    = $(INSTALL_DIR)"
-	@echo "  GO_VERSION     = $(GO_VERSION)"
+	@printf "$(CYAN)Utility:$(RESET)\n"
+	@echo "  status                 Show build and install status"
+	@echo "  help                   Show this help"
