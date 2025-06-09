@@ -1,4 +1,4 @@
--- lua/hoverfloat/socket_client.lua - Persistent connection version
+-- lua/hoverfloat/socket_client.lua - Persistent connection version with fast event fixes
 local M = {}
 local uv = vim.uv or vim.loop
 
@@ -51,7 +51,9 @@ end
 -- Log connection events
 local function log_connection_event(event, details)
   if vim.g.hoverfloat_debug then
-    vim.notify(string.format("[HoverFloat] %s: %s", event, details or ""), vim.log.levels.DEBUG)
+    vim.schedule(function()
+      vim.notify(string.format("[HoverFloat] %s: %s", event, details or ""), vim.log.levels.DEBUG)
+    end)
   end
 end
 
@@ -68,14 +70,24 @@ local function cleanup_connection()
   state.connecting = false
   state.incoming_buffer = ""
 
-  -- Stop timers
+  -- Stop timers (schedule to avoid fast event context issues)
   if state.heartbeat_timer then
-    vim.fn.timer_stop(state.heartbeat_timer)
+    local timer_to_stop = state.heartbeat_timer
+    vim.schedule(function()
+      if timer_to_stop then
+        vim.fn.timer_stop(timer_to_stop)
+      end
+    end)
     state.heartbeat_timer = nil
   end
 
   if state.connection_check_timer then
-    vim.fn.timer_stop(state.connection_check_timer)
+    local timer_to_stop = state.connection_check_timer
+    vim.schedule(function()
+      if timer_to_stop then
+        vim.fn.timer_stop(timer_to_stop)
+      end
+    end)
     state.connection_check_timer = nil
   end
 end
@@ -98,18 +110,24 @@ local function handle_connection_failure(reason)
 end
 
 -- Schedule reconnection attempt
-local function schedule_reconnect()
+function schedule_reconnect()
   if state.reconnect_timer then
-    vim.fn.timer_stop(state.reconnect_timer)
+    vim.schedule(function()
+      if state.reconnect_timer then
+        vim.fn.timer_stop(state.reconnect_timer)
+      end
+    end)
   end
 
   local delay = get_reconnect_delay()
   log_connection_event("Scheduling reconnect",
     string.format("in %dms (attempt %d)", delay, state.connection_attempts + 1))
 
-  state.reconnect_timer = vim.fn.timer_start(delay, function()
-    state.reconnect_timer = nil
-    create_connection()
+  vim.schedule(function()
+    state.reconnect_timer = vim.fn.timer_start(delay, function()
+      state.reconnect_timer = nil
+      create_connection()
+    end)
   end)
 end
 
@@ -225,44 +243,55 @@ end
 -- Start heartbeat mechanism
 local function start_heartbeat()
   if state.heartbeat_timer then
-    vim.fn.timer_stop(state.heartbeat_timer)
+    vim.schedule(function()
+      if state.heartbeat_timer then
+        vim.fn.timer_stop(state.heartbeat_timer)
+      end
+    end)
   end
 
-  state.heartbeat_timer = vim.fn.timer_start(config.heartbeat_interval, function()
-    if not state.connected then
-      return
-    end
-
-    -- Check if we've missed heartbeats
-    local now = vim.uv.now()
-    if state.last_heartbeat_received > 0 then
-      local time_since_last_heartbeat = now - state.last_heartbeat_received
-      if time_since_last_heartbeat > config.heartbeat_timeout then
-        log_connection_event("Heartbeat timeout", string.format("No pong for %dms", time_since_last_heartbeat))
-        handle_connection_failure("Heartbeat timeout")
+  -- Use vim.schedule to avoid fast event context issues
+  vim.schedule(function()
+    state.heartbeat_timer = vim.fn.timer_start(config.heartbeat_interval, function()
+      if not state.connected then
         return
       end
-    end
 
-    -- Send ping
-    local ping_msg = create_message("ping", { timestamp = now })
-    if send_raw_message(ping_msg) then
-      state.last_heartbeat_sent = now
-      log_connection_event("Heartbeat", "Ping sent")
-    end
-  end, { ['repeat'] = -1 })
+      -- Check if we've missed heartbeats
+      local now = vim.uv.now()
+      if state.last_heartbeat_received > 0 then
+        local time_since_last_heartbeat = now - state.last_heartbeat_received
+        if time_since_last_heartbeat > config.heartbeat_timeout then
+          log_connection_event("Heartbeat timeout", string.format("No pong for %dms", time_since_last_heartbeat))
+          handle_connection_failure("Heartbeat timeout")
+          return
+        end
+      end
+
+      -- Send ping
+      local ping_msg = create_message("ping", { timestamp = now })
+      if send_raw_message(ping_msg) then
+        state.last_heartbeat_sent = now
+        log_connection_event("Heartbeat", "Ping sent")
+      end
+    end, { ['repeat'] = -1 })
+  end)
 end
 
 -- Stop heartbeat mechanism
 local function stop_heartbeat()
   if state.heartbeat_timer then
-    vim.fn.timer_stop(state.heartbeat_timer)
-    state.heartbeat_timer = nil
+    vim.schedule(function()
+      if state.heartbeat_timer then
+        vim.fn.timer_stop(state.heartbeat_timer)
+        state.heartbeat_timer = nil
+      end
+    end)
   end
 end
 
 -- Create persistent connection
-local function create_connection()
+function create_connection()
   if state.connecting or state.connected then
     return
   end
@@ -276,22 +305,27 @@ local function create_connection()
     return
   end
 
-  -- Set up connection timeout
-  local timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
-    log_connection_event("Connection timeout", string.format("After %dms", config.connection_timeout))
-    if socket and not socket:is_closing() then
-      socket:close()
-    end
-    state.connecting = false
-    handle_connection_failure("Connection timeout")
+  -- Set up connection timeout using vim.schedule
+  local timeout_timer
+  vim.schedule(function()
+    timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
+      log_connection_event("Connection timeout", string.format("After %dms", config.connection_timeout))
+      if socket and not socket:is_closing() then
+        socket:close()
+      end
+      state.connecting = false
+      handle_connection_failure("Connection timeout")
+    end)
   end)
 
   -- Attempt connection
   socket:connect(state.socket_path, function(err)
     -- Cancel timeout timer
-    vim.schedule(function()
-      vim.fn.timer_stop(timeout_timer)
-    end)
+    if timeout_timer then
+      vim.schedule(function()
+        vim.fn.timer_stop(timeout_timer)
+      end)
+    end
 
     if err then
       socket:close()
@@ -368,8 +402,12 @@ function M.disconnect()
 
   -- Cancel reconnection
   if state.reconnect_timer then
-    vim.fn.timer_stop(state.reconnect_timer)
-    state.reconnect_timer = nil
+    vim.schedule(function()
+      if state.reconnect_timer then
+        vim.fn.timer_stop(state.reconnect_timer)
+        state.reconnect_timer = nil
+      end
+    end)
   end
 
   -- Stop heartbeat
@@ -392,7 +430,9 @@ function M.disconnect()
   state.message_queue = {}
   state.connection_attempts = 0
 
-  vim.notify("HoverFloat: Disconnected from context window", vim.log.levels.INFO)
+  vim.schedule(function()
+    vim.notify("HoverFloat: Disconnected from context window", vim.log.levels.INFO)
+  end)
 end
 
 function M.send_context_update(context_data)
