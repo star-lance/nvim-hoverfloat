@@ -1,10 +1,12 @@
 package model
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,6 +24,64 @@ const (
 	FocusDefinition
 	FocusTypeDefinition
 )
+
+// ConnectionState represents the current connection status
+type ConnectionState int
+
+const (
+	Disconnected ConnectionState = iota
+	Connecting
+	Connected
+	Reconnecting
+)
+
+// MessageBridge handles thread-safe communication between goroutines and Bubble Tea
+type MessageBridge struct {
+	messages chan tea.Msg
+	mu       sync.RWMutex
+}
+
+func NewMessageBridge() *MessageBridge {
+	return &MessageBridge{
+		messages: make(chan tea.Msg, 200), // Buffered channel for message queue
+	}
+}
+
+// SendMessage queues a message to be sent to the main loop
+func (mb *MessageBridge) SendMessage(msg tea.Msg) {
+	select {
+	case mb.messages <- msg:
+		// Message queued successfully
+	default:
+		// Channel full, drop oldest messages to prevent blocking
+		select {
+		case <-mb.messages:
+			mb.messages <- msg
+		default:
+		}
+	}
+}
+
+// CheckMessages returns a command that polls for queued messages
+func (mb *MessageBridge) CheckMessages() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case msg := <-mb.messages:
+			return msg
+		default:
+			return ContinuePollingMsg{}
+		}
+	}
+}
+
+// Custom message types
+type ContinuePollingMsg struct{}
+type ConnectionStateChangedMsg struct {
+	State ConnectionState
+}
+type HeartbeatMsg struct {
+	Timestamp int64
+}
 
 // App represents the main application model
 type App struct {
@@ -42,10 +102,15 @@ type App struct {
 	ShowDefinition bool
 	ShowTypeInfo   bool
 
-	// Socket communication
-	socketPath     string
-	socketListener net.Listener
-	connected      bool
+	// Persistent socket communication
+	socketPath        string
+	socketListener    net.Listener
+	clientConn        net.Conn
+	connMutex         sync.RWMutex
+	connectionState   ConnectionState
+	messageBridge     *MessageBridge
+	heartbeatTimer    *time.Timer
+	connectionTimeout time.Duration
 
 	// Styles
 	styles *styles.Styles
@@ -68,13 +133,16 @@ type Context struct {
 // NewApp creates a new application model
 func NewApp(socketPath string) *App {
 	return &App{
-		socketPath:     socketPath,
-		ShowHover:      true,
-		ShowReferences: true,
-		ShowDefinition: true,
-		ShowTypeInfo:   true,
-		Focus:          FocusHover,
-		styles:         styles.New(),
+		socketPath:        socketPath,
+		ShowHover:         true,
+		ShowReferences:    true,
+		ShowDefinition:    true,
+		ShowTypeInfo:      true,
+		Focus:             FocusHover,
+		styles:            styles.New(),
+		messageBridge:     NewMessageBridge(),
+		connectionState:   Disconnected,
+		connectionTimeout: 30 * time.Second,
 	}
 }
 
@@ -83,6 +151,7 @@ func (m *App) Init() tea.Cmd {
 	return tea.Batch(
 		m.startSocketServer(),
 		tea.EnterAltScreen,
+		m.messageBridge.CheckMessages(),
 	)
 }
 
@@ -93,7 +162,7 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 		m.Ready = true
-		return m, nil
+		return m, m.messageBridge.CheckMessages()
 
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
@@ -102,22 +171,26 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Context = (*Context)(msg.Data)
 		m.LastUpdate = time.Now()
 		m.ErrorMsg = ""
-
-		// Continue listening for more messages and force a redraw
-		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
+		return m, m.messageBridge.CheckMessages()
 
 	case socket.ErrorMsg:
 		m.ErrorMsg = string(msg)
-		// Continue listening for more messages and force a redraw
-		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
+		return m, m.messageBridge.CheckMessages()
 
-	case socket.ConnectionMsg:
-		m.connected = bool(msg)
-		// Start listening for messages now that socket is connected
-		return m, m.listenForMessages()
+	case ConnectionStateChangedMsg:
+		m.setConnectionState(msg.State)
+		return m, m.messageBridge.CheckMessages()
+
+	case HeartbeatMsg:
+		// Update last heartbeat time
+		return m, m.messageBridge.CheckMessages()
+
+	case ContinuePollingMsg:
+		// Continue polling for messages
+		return m, m.messageBridge.CheckMessages()
 
 	default:
-		return m, nil
+		return m, m.messageBridge.CheckMessages()
 	}
 }
 
@@ -132,30 +205,30 @@ func (m *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Content navigation and toggles
 	switch msg.String() {
 	case "h", "left":
-		return m.navigateLeft(), nil
+		return m.navigateLeft(), m.messageBridge.CheckMessages()
 	case "j", "down":
-		return m.navigateDown(), nil
+		return m.navigateDown(), m.messageBridge.CheckMessages()
 	case "k", "up":
-		return m.navigateUp(), nil
+		return m.navigateUp(), m.messageBridge.CheckMessages()
 	case "l", "right":
-		return m.navigateRight(), nil
+		return m.navigateRight(), m.messageBridge.CheckMessages()
 	case "enter", " ":
-		return m.toggleCurrentField(), nil
+		return m.toggleCurrentField(), m.messageBridge.CheckMessages()
 	case "H":
 		m.ShowHover = !m.ShowHover
-		return m, nil
+		return m, m.messageBridge.CheckMessages()
 	case "R":
 		m.ShowReferences = !m.ShowReferences
-		return m, nil
+		return m, m.messageBridge.CheckMessages()
 	case "D":
 		m.ShowDefinition = !m.ShowDefinition
-		return m, nil
+		return m, m.messageBridge.CheckMessages()
 	case "T":
 		m.ShowTypeInfo = !m.ShowTypeInfo
-		return m, nil
+		return m, m.messageBridge.CheckMessages()
 	}
 
-	return m, nil
+	return m, m.messageBridge.CheckMessages()
 }
 
 // Navigation methods
@@ -255,17 +328,19 @@ func (m *App) View() string {
 		}
 	}
 
+	connected := m.getConnectionState() == Connected
+
 	content := view.Render(m.Width, m.Height, &view.ViewData{
 		Context:        contextData,
 		ErrorMsg:       m.ErrorMsg,
-		Connected:      m.connected,
+		Connected:      connected,
 		LastUpdate:     m.LastUpdate,
 		Focus:          int(m.Focus),
 		ShowHover:      m.ShowHover,
 		ShowReferences: m.ShowReferences,
 		ShowDefinition: m.ShowDefinition,
 		ShowTypeInfo:   m.ShowTypeInfo,
-		MenuVisible:    false, // Menu system removed
+		MenuVisible:    false,
 		MenuSelection:  0,
 		// Viewport fields removed
 		HoverViewport:      nil,
@@ -275,6 +350,19 @@ func (m *App) View() string {
 	}, m.styles)
 
 	return content
+}
+
+// Connection state management (thread-safe)
+func (m *App) setConnectionState(state ConnectionState) {
+	m.connMutex.Lock()
+	defer m.connMutex.Unlock()
+	m.connectionState = state
+}
+
+func (m *App) getConnectionState() ConnectionState {
+	m.connMutex.RLock()
+	defer m.connMutex.RUnlock()
+	return m.connectionState
 }
 
 // startSocketServer initializes the Unix socket server
@@ -291,38 +379,169 @@ func (m *App) startSocketServer() tea.Cmd {
 
 		m.socketListener = listener
 
-		return socket.ConnectionMsg(true)
+		// Start accepting connections in background
+		go m.acceptConnections()
+
+		return ConnectionStateChangedMsg{State: Connecting}
 	}
 }
 
-// listenForMessages returns a command that listens for incoming socket messages
-func (m *App) listenForMessages() tea.Cmd {
-	return func() tea.Msg {
-		if m.socketListener == nil {
-			return nil
-		}
-
+// acceptConnections runs in a goroutine to handle incoming connections
+func (m *App) acceptConnections() {
+	for {
 		conn, err := m.socketListener.Accept()
 		if err != nil {
-			return socket.ErrorMsg("Socket connection failed")
+			// Listener closed, exit gracefully
+			m.messageBridge.SendMessage(socket.ErrorMsg("Socket listener closed"))
+			return
 		}
 
-		// Handle ONE message per connection, then close
-		decoder := json.NewDecoder(conn)
-		var msg socket.Message
-		if err := decoder.Decode(&msg); err != nil {
-			conn.Close()
-			return socket.ErrorMsg("Failed to decode message")
-		}
+		// Handle new connection
+		m.handleNewConnection(conn)
+	}
+}
 
-		// Close connection after reading one message
+// handleNewConnection sets up a new client connection
+func (m *App) handleNewConnection(conn net.Conn) {
+	m.connMutex.Lock()
+
+	// Close existing connection if any
+	if m.clientConn != nil {
+		m.clientConn.Close()
+	}
+
+	m.clientConn = conn
+	m.connectionState = Connected
+	m.connMutex.Unlock()
+
+	// Notify main loop of connection
+	m.messageBridge.SendMessage(ConnectionStateChangedMsg{State: Connected})
+
+	// Start handling this connection in a goroutine
+	go m.handlePersistentConnection(conn)
+}
+
+// handlePersistentConnection manages the lifecycle of a persistent connection
+func (m *App) handlePersistentConnection(conn net.Conn) {
+	defer func() {
 		conn.Close()
+		m.connMutex.Lock()
+		if m.clientConn == conn {
+			m.clientConn = nil
+			m.connectionState = Disconnected
+		}
+		m.connMutex.Unlock()
 
-		// Return the message to the main program
-		if msg.Type == "context_update" {
-			return socket.ContextUpdateMsg{Data: (*socket.ContextData)(&msg.Data)}
+		// Notify main loop of disconnection
+		m.messageBridge.SendMessage(ConnectionStateChangedMsg{State: Disconnected})
+	}()
+
+	// Set up buffered reader for newline-delimited messages
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 64KB initial, 1MB max
+
+	// Set initial read timeout
+	conn.SetReadDeadline(time.Now().Add(m.connectionTimeout))
+
+	for scanner.Scan() {
+		// Reset read timeout on each message
+		conn.SetReadDeadline(time.Now().Add(m.connectionTimeout))
+
+		line := scanner.Text()
+		if line == "" {
+			continue
 		}
 
-		return nil
+		// Parse JSON message
+		var msg socket.Message
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			m.messageBridge.SendMessage(socket.ErrorMsg(fmt.Sprintf("Failed to parse message: %v", err)))
+			continue
+		}
+
+		// Handle different message types
+		switch msg.Type {
+		case "context_update":
+			m.messageBridge.SendMessage(socket.ContextUpdateMsg{Data: &msg.Data})
+
+		case "ping":
+			m.handlePing(conn, msg.Timestamp)
+
+		case "disconnect":
+			// Client requested clean disconnect
+			return
+
+		case "error":
+			if errorMsg, ok := msg.Data.(map[string]interface{})["error"].(string); ok {
+				m.messageBridge.SendMessage(socket.ErrorMsg(errorMsg))
+			}
+
+		default:
+			// Unknown message type, log but continue
+			m.messageBridge.SendMessage(socket.ErrorMsg(fmt.Sprintf("Unknown message type: %s", msg.Type)))
+		}
+	}
+
+	// Check for scanner errors
+	if err := scanner.Err(); err != nil {
+		m.messageBridge.SendMessage(socket.ErrorMsg(fmt.Sprintf("Connection error: %v", err)))
+	}
+}
+
+// handlePing responds to ping messages with pong
+func (m *App) handlePing(conn net.Conn, clientTimestamp int64) {
+	pong := map[string]interface{}{
+		"type":             "pong",
+		"timestamp":        time.Now().UnixMilli(),
+		"client_timestamp": clientTimestamp,
+	}
+
+	data, err := json.Marshal(pong)
+	if err != nil {
+		return
+	}
+
+	// Send pong response with newline delimiter
+	conn.Write(append(data, '\n'))
+
+	// Update heartbeat in main loop
+	m.messageBridge.SendMessage(HeartbeatMsg{Timestamp: time.Now().UnixMilli()})
+}
+
+// sendToClient sends a message to the connected client (if any)
+func (m *App) sendToClient(message interface{}) error {
+	m.connMutex.RLock()
+	conn := m.clientConn
+	m.connMutex.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("no client connected")
+	}
+
+	data, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %v", err)
+	}
+
+	// Send with newline delimiter
+	_, err = conn.Write(append(data, '\n'))
+	if err != nil {
+		// Connection failed, will be cleaned up by connection handler
+		return fmt.Errorf("failed to write to connection: %v", err)
+	}
+
+	return nil
+}
+
+// GetConnectionStatus returns current connection information
+func (m *App) GetConnectionStatus() map[string]interface{} {
+	m.connMutex.RLock()
+	defer m.connMutex.RUnlock()
+
+	return map[string]interface{}{
+		"state":       m.connectionState,
+		"connected":   m.connectionState == Connected,
+		"socket_path": m.socketPath,
+		"last_update": m.LastUpdate,
 	}
 }
