@@ -21,6 +21,9 @@ build:
 	@cd cmd/context-tui && go build $(GO_BUILD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) .
 	@echo "✅ Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
+# Development install - same as regular install but with clearer name
+install-dev: install
+
 # Install binary to user's local bin (automatically stops running processes)
 install: build
 	@echo "📦 Installing $(BINARY_NAME) to $(INSTALL_DIR)..."

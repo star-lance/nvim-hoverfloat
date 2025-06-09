@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
@@ -43,20 +42,10 @@ type App struct {
 	ShowDefinition bool
 	ShowTypeInfo   bool
 
-	// Menu state
-	MenuVisible   bool
-	MenuSelection int
-
 	// Socket communication
 	socketPath     string
 	socketListener net.Listener
 	connected      bool
-
-	// Viewports for scrollable sections
-	hoverViewport      viewport.Model
-	referencesViewport viewport.Model
-	definitionViewport viewport.Model
-	typeInfoViewport   viewport.Model
 
 	// Styles
 	styles *styles.Styles
@@ -79,17 +68,13 @@ type Context struct {
 // NewApp creates a new application model
 func NewApp(socketPath string) *App {
 	return &App{
-		socketPath:         socketPath,
-		ShowHover:          true,
-		ShowReferences:     true,
-		ShowDefinition:     true,
-		ShowTypeInfo:       true,
-		Focus:              FocusHover,
-		styles:             styles.New(),
-		hoverViewport:      viewport.New(80, 10),
-		referencesViewport: viewport.New(80, 10),
-		definitionViewport: viewport.New(80, 5),
-		typeInfoViewport:   viewport.New(80, 5),
+		socketPath:     socketPath,
+		ShowHover:      true,
+		ShowReferences: true,
+		ShowDefinition: true,
+		ShowTypeInfo:   true,
+		Focus:          FocusHover,
+		styles:         styles.New(),
 	}
 }
 
@@ -108,9 +93,6 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Width = msg.Width
 		m.Height = msg.Height
 		m.Ready = true
-
-		// Update viewport dimensions based on available space
-		m.updateViewportSizes()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -120,9 +102,6 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Context = (*Context)(msg.Data)
 		m.LastUpdate = time.Now()
 		m.ErrorMsg = ""
-
-		// Update viewport sizes when new content arrives
-		m.updateViewportSizes()
 
 		// Continue listening for more messages and force a redraw
 		return m, tea.Batch(m.listenForMessages(), tea.Tick(time.Millisecond, func(time.Time) tea.Msg { return nil }))
@@ -148,24 +127,6 @@ func (m *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
-	case "?", "F1":
-		m.MenuVisible = !m.MenuVisible
-		return m, nil
-	}
-
-	// Menu navigation
-	if m.MenuVisible {
-		switch msg.String() {
-		case "j", "down":
-			m.MenuSelection = (m.MenuSelection + 1) % 4
-		case "k", "up":
-			m.MenuSelection = (m.MenuSelection - 1 + 4) % 4
-		case "enter", " ":
-			return m.toggleMenuItem(), nil
-		case "esc":
-			m.MenuVisible = false
-		}
-		return m, nil
 	}
 
 	// Content navigation and toggles
@@ -180,10 +141,6 @@ func (m *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.navigateRight(), nil
 	case "enter", " ":
 		return m.toggleCurrentField(), nil
-	case "ctrl+d", "pgdn":
-		return m.scrollCurrentViewportDown(), nil
-	case "ctrl+u", "pgup":
-		return m.scrollCurrentViewportUp(), nil
 	case "H":
 		m.ShowHover = !m.ShowHover
 		return m, nil
@@ -195,9 +152,6 @@ func (m *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "T":
 		m.ShowTypeInfo = !m.ShowTypeInfo
-		return m, nil
-	case "r":
-		// Refresh - request new data (mock for now)
 		return m, nil
 	}
 
@@ -263,103 +217,6 @@ func (m *App) findCurrentIndex(areas []FocusArea) int {
 	return 0
 }
 
-// updateViewportSizes calculates and sets viewport dimensions based on terminal size
-func (m *App) updateViewportSizes() {
-	if m.Width == 0 || m.Height == 0 {
-		return
-	}
-
-	// Calculate available space for content (minus header and footer)
-	headerHeight := 3
-	footerHeight := 3
-	contentHeight := m.Height - headerHeight - footerHeight
-
-	// Divide content area among visible sections
-	visibleSections := 0
-	if m.ShowHover {
-		visibleSections++
-	}
-	if m.ShowReferences {
-		visibleSections++
-	}
-	if m.ShowDefinition {
-		visibleSections++
-	}
-	if m.ShowTypeInfo {
-		visibleSections++
-	}
-
-	if visibleSections == 0 {
-		return
-	}
-
-	// Calculate section height (with minimum of 5 lines)
-	sectionHeight := max(5, contentHeight/visibleSections)
-	width := m.Width - 4 // Account for padding
-
-	// Update each viewport
-	m.hoverViewport.Width = width
-	m.hoverViewport.Height = sectionHeight
-	m.referencesViewport.Width = width
-	m.referencesViewport.Height = sectionHeight
-	m.definitionViewport.Width = width
-	m.definitionViewport.Height = max(3, sectionHeight/2) // Smaller for simple location info
-	m.typeInfoViewport.Width = width
-	m.typeInfoViewport.Height = max(3, sectionHeight/2) // Smaller for simple location info
-}
-
-// scrollCurrentViewportDown scrolls the currently focused viewport down
-func (m *App) scrollCurrentViewportDown() *App {
-	switch m.Focus {
-	case FocusHover:
-		m.hoverViewport.ScrollDown(3)
-	case FocusReferences:
-		m.referencesViewport.ScrollDown(3)
-	case FocusDefinition:
-		m.definitionViewport.ScrollDown(1)
-	case FocusTypeDefinition:
-		m.typeInfoViewport.ScrollDown(1)
-	}
-	return m
-}
-
-// scrollCurrentViewportUp scrolls the currently focused viewport up
-func (m *App) scrollCurrentViewportUp() *App {
-	switch m.Focus {
-	case FocusHover:
-		m.hoverViewport.ScrollUp(3)
-	case FocusReferences:
-		m.referencesViewport.ScrollUp(3)
-	case FocusDefinition:
-		m.definitionViewport.ScrollUp(1)
-	case FocusTypeDefinition:
-		m.typeInfoViewport.ScrollUp(1)
-	}
-	return m
-}
-
-// getCurrentViewport returns the currently focused viewport
-func (m *App) getCurrentViewport() *viewport.Model {
-	switch m.Focus {
-	case FocusHover:
-		return &m.hoverViewport
-	case FocusReferences:
-		return &m.referencesViewport
-	case FocusDefinition:
-		return &m.definitionViewport
-	case FocusTypeDefinition:
-		return &m.typeInfoViewport
-	}
-	return &m.hoverViewport
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // toggleCurrentField toggles the currently focused field
 func (m *App) toggleCurrentField() *App {
 	switch m.Focus {
@@ -370,21 +227,6 @@ func (m *App) toggleCurrentField() *App {
 	case FocusDefinition:
 		m.ShowDefinition = !m.ShowDefinition
 	case FocusTypeDefinition:
-		m.ShowTypeInfo = !m.ShowTypeInfo
-	}
-	return m
-}
-
-// toggleMenuItem toggles the selected menu item
-func (m *App) toggleMenuItem() *App {
-	switch m.MenuSelection {
-	case 0:
-		m.ShowHover = !m.ShowHover
-	case 1:
-		m.ShowReferences = !m.ShowReferences
-	case 2:
-		m.ShowDefinition = !m.ShowDefinition
-	case 3:
 		m.ShowTypeInfo = !m.ShowTypeInfo
 	}
 	return m
@@ -414,21 +256,22 @@ func (m *App) View() string {
 	}
 
 	content := view.Render(m.Width, m.Height, &view.ViewData{
-		Context:            contextData,
-		ErrorMsg:           m.ErrorMsg,
-		Connected:          m.connected,
-		LastUpdate:         m.LastUpdate,
-		Focus:              int(m.Focus),
-		ShowHover:          m.ShowHover,
-		ShowReferences:     m.ShowReferences,
-		ShowDefinition:     m.ShowDefinition,
-		ShowTypeInfo:       m.ShowTypeInfo,
-		MenuVisible:        m.MenuVisible,
-		MenuSelection:      m.MenuSelection,
-		HoverViewport:      &m.hoverViewport,
-		ReferencesViewport: &m.referencesViewport,
-		DefinitionViewport: &m.definitionViewport,
-		TypeInfoViewport:   &m.typeInfoViewport,
+		Context:        contextData,
+		ErrorMsg:       m.ErrorMsg,
+		Connected:      m.connected,
+		LastUpdate:     m.LastUpdate,
+		Focus:          int(m.Focus),
+		ShowHover:      m.ShowHover,
+		ShowReferences: m.ShowReferences,
+		ShowDefinition: m.ShowDefinition,
+		ShowTypeInfo:   m.ShowTypeInfo,
+		MenuVisible:    false, // Menu system removed
+		MenuSelection:  0,
+		// Viewport fields removed
+		HoverViewport:      nil,
+		ReferencesViewport: nil,
+		DefinitionViewport: nil,
+		TypeInfoViewport:   nil,
 	}, m.styles)
 
 	return content

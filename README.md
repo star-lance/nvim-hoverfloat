@@ -23,7 +23,12 @@ Real-time LSP context - Hover info, references, and definitions update as you mo
 }
 
 ```
-for transparency, I have not actually tested any of these except for Lazy because I am lazy. If you use one of the below package managers and it does not work correctly, please either let me know and I will get off may ass and spend the 10 minutes it will take to install another plugin manager and fix it, or submit a PR. I will approve pretty much anything that's not malware if it fixes a bug, although I might revisit it later and change some elements.
+for transparency, I have not actually tested any of these except for Lazy
+because I am lazy. If you use one of the below package managers and it does
+not work correctly, please either let me know and I will get off may ass
+and spend the 10 minutes it will take to install another plugin manager and
+fix it, or submit a PR. I will approve pretty much anything that's not malware
+if it fixes a bug, although I might revisit it later and change some elements.
 
 ### Using packer.nvim
 
@@ -57,16 +62,18 @@ use {
 
 ## Requirements
 
-- Neovim 0.8+ with LSP support
-- Go 1.21+ (for building)
-- Terminal emulator - kitty (default), or any terminal that supports spawning windows
-- LSP servers - Any LSP server configured in Neovim
+- Neovim 0.8+ with LSP support (I use Mason to manage my LSPs)
+- Go 1.21+
+- Terminal emulator - kitty is default, but config settings are coming
+- LSP server - Must assosciate filetypes with the LSP you want to communicate
+    with the plugin window
 
 ## Usage
 
 ### Basic Usage
 
-Once installed, the plugin automatically shows context information as you move your cursor:
+Once installed, the floating window automatically shows context information
+as you move your cursor over different tokens. NVIM commands:
 
 ```vim
 :ContextWindow toggle    " Toggle the context window
@@ -86,7 +93,7 @@ Once installed, the plugin automatically shows context information as you move y
 | `<leader>cr` | Restart context window |
 | `<leader>cs` | Show status |
 
-### Interactive TUI Controls
+### Interactive Controls
 
 When the TUI is active:
 
@@ -98,7 +105,6 @@ When the TUI is active:
 | `R` | Toggle references |
 | `D` | Toggle definition |
 | `T` | Toggle type information |
-| `?` / `F1` | Show help menu |
 | `q` / `Ctrl+C` | Quit |
 
 ## Configuration
@@ -148,10 +154,7 @@ require("hoverfloat").setup({
 
 ### Terminal Configuration
 
-The plugin works best with kitty terminal. Example configurations are provided in the `examples/` directory:
-
-- `examples/kitty_context.conf` - Kitty terminal configuration
-- `examples/hyprland_rules.conf` - Hyprland window manager rules
+The plugin works best with kitty terminal. Configuration files are provided in the `config/` directory.
 
 ### Custom Terminal
 
@@ -165,103 +168,94 @@ require("hoverfloat").setup({
 })
 ```
 
-## Development
+<details>
+<summary><strong>Advanced Configuration Files</strong></summary>
 
-### Building from Source
+The plugin includes several configuration files in the `config/` directory for advanced customization:
 
-```bash
-# Clone the repository
-git clone https://github.com/star-lance/nvim-hoverfloat.git
-cd nvim-hoverfloat
+#### Kitty Terminal Configuration (`config/kitty_context.conf`)
 
-# Install dependencies
-make deps
-
-# Build the TUI binary
-make build
-
-# Run tests
-make test
-
-# Install locally
-make install
-```
-
-### Development Framework
-
-The plugin includes a comprehensive development framework for testing without disrupting your Neovim setup:
+Optimized terminal settings for the LSP context window:
 
 ```bash
-# Start interactive development session
-make dev
-
-# Run development tests
-make dev-test
-
-# Build development tools
-make dev-build
+# Use with: kitty --config=config/kitty_context.conf -e nvim-context-tui
+font_family      JetBrains Mono
+font_size        11.0
+initial_window_width  80c
+initial_window_height 25c
+background            #1a1b26
+foreground            #c0caf5
+# ... additional color and performance settings
 ```
 
-### Contributing
+Key features:
+- Tokyo Night color scheme matching Neovim
+- Optimized font rendering with JetBrains Mono
+- Disabled unnecessary features for better performance
+- Proper window sizing and positioning
 
-1. Fork the repository
-2. Create your feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes
-4. Run tests: `make test`
-5. Commit your changes: `git commit -m 'Add amazing feature'`
-6. Push to the branch: `git push origin feature/amazing-feature`
-7. Open a Pull Request
+#### Hyprland Window Manager Rules (`config/hyprland_rules.conf`)
 
-## Troubleshooting
+Window management rules for Hyprland users:
 
-### Health Check
-
-Run the health check to diagnose issues:
-
-```vim
-:checkhealth nvim-hoverfloat
-```
-
-### Common Issues
-
-TUI binary not found:
 ```bash
-# Rebuild and reinstall
-make clean && make install
-
-# Or specify binary path manually
-require("hoverfloat").set_binary_path("/path/to/nvim-context-tui")
+# Add to ~/.config/hypr/hyprland.conf
+windowrule = float, ^(lsp-context)$
+windowrule = pin, ^(lsp-context)$
+windowrule = size 640 600, ^(lsp-context)$
+windowrule = move 1280 100, ^(lsp-context)$
 ```
 
-Socket connection issues:
-```bash
-# Check if socket exists
-ls -la /tmp/nvim_context.sock
+Features:
+- Floating window behavior
+- Automatic positioning and sizing
+- Multi-monitor support
+- Special workspace integration
+- Focus management to avoid interrupting coding
 
-# Restart the plugin
-:ContextWindow restart
+#### TUI Appearance Configuration (`config/aesthetics.conf`)
+
+Advanced styling and theming options:
+
+```ini
+[colors.background]
+primary    = "#020617"    # Main TUI background
+secondary  = "#0f172a"    # Section backgrounds
+accent     = "#64748b"    # Header/footer backgrounds
+
+[colors.accent]
+blue   = "#7aa2f7"       # Headers, titles
+green  = "#9ece6a"       # Success states
+yellow = "#e0af68"       # Warnings, emphasis
+
+[formatting.sections]
+consistent_backgrounds = true
+full_width_backgrounds = true
+border_style = "bottom_only"
+
+[markdown]
+use_glamour = true
+theme = "dark"
+code_highlighting = true
 ```
 
-LSP not working:
-```vim
-# Check LSP status
-:LspInfo
+Configuration sections:
+- **Colors**: Background, foreground, accent, and semantic colors
+- **Formatting**: Text styles, section layouts, code highlighting
+- **Layout**: Spacing, dimensions, and positioning
+- **Markdown**: Rendering options for documentation
+- **Accessibility**: High contrast and focus indicators
+- **Debug**: Development and troubleshooting options
 
-# Ensure LSP is attached to current buffer
-:lua print(#vim.lsp.get_clients({ bufnr = 0 }))
-```
+#### Usage
 
-### Debug Mode
+To use these configurations:
 
-Enable debug mode for verbose logging:
+1. **Kitty**: Reference the config when starting the context window
+2. **Hyprland**: Include rules in your Hyprland configuration
+3. **Aesthetics**: The TUI automatically loads styling from `config/aesthetics.conf`
 
-```lua
-require("hoverfloat").setup({
-  communication = {
-    debug = true, -- Enable debug logging
-  }
-})
-```
+</details>
 
 ## Architecture
 

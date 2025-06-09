@@ -268,60 +268,10 @@ function M.get_symbol_at_cursor()
   }
 end
 
-function M.has_lsp_capability(capability)
-  local clients = vim.lsp.get_clients({ bufnr = 0 })
-  for _, client in ipairs(clients) do
-    if client.server_capabilities and client.server_capabilities[capability] then
-      return true
-    end
-  end
-  return false
-end
 
--- Get available LSP capabilities for current buffer
-function M.get_lsp_capabilities()
-  local clients = vim.lsp.get_clients({ bufnr = 0 })
-  local capabilities = {
-    hover = false,
-    definition = false,
-    references = false,
-    type_definition = false,
-  }
-
-  for _, client in ipairs(clients) do
-    if client.supports_method('textDocument/hover') then
-      capabilities.hover = true
-    end
-    if client.supports_method('textDocument/definition') then
-      capabilities.definition = true
-    end
-    if client.supports_method('textDocument/references') then
-      capabilities.references = true
-    end
-    if client.supports_method('textDocument/typeDefinition') then
-      capabilities.type_definition = true
-    end
-  end
-
-  return capabilities
-end
-
--- Clear cache (useful for debugging)
+-- Clear cache
 function M.clear_cache()
   cache.data = {}
-end
-
--- Get cache statistics
-function M.get_cache_stats()
-  local count = 0
-  for _ in pairs(cache.data) do
-    count = count + 1
-  end
-
-  return {
-    entries = count,
-    ttl = cache.ttl,
-  }
 end
 
 return M

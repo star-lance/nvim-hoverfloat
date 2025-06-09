@@ -96,71 +96,6 @@ local function find_tui_binary()
   return nil
 end
 
--- Health check function
-function M.health()
-  local health = vim.health or require('health')
-
-  health.start('nvim-hoverfloat')
-
-  -- Check if TUI binary exists
-  local binary_path = find_tui_binary()
-  if binary_path then
-    health.ok('TUI binary found: ' .. binary_path)
-  else
-    health.error('TUI binary not found', {
-      'Run `make build` in the plugin directory',
-      'Or install with `make install`',
-      'Or ensure nvim-context-tui is in your PATH'
-    })
-  end
-
-  -- Check LSP availability
-  local clients = vim.lsp.get_clients({ bufnr = 0 })
-  if #clients > 0 then
-    health.ok(string.format('LSP clients available (%d active)', #clients))
-    for _, client in ipairs(clients) do
-      health.info('  • ' .. (client.name or 'unnamed'))
-    end
-  else
-    health.warn('No LSP clients attached to current buffer')
-  end
-
-  -- Check terminal
-  if vim.fn.executable(state.config.tui.terminal_cmd) == 1 then
-    health.ok('Terminal executable found: ' .. state.config.tui.terminal_cmd)
-  else
-    health.error('Terminal not found: ' .. state.config.tui.terminal_cmd, {
-      'Install kitty or update config.tui.terminal_cmd'
-    })
-  end
-
-  -- Check socket permissions
-  local socket_dir = vim.fn.fnamemodify(state.config.communication.socket_path, ':h')
-  if vim.fn.isdirectory(socket_dir) == 1 then
-    health.ok('Socket directory accessible: ' .. socket_dir)
-  else
-    health.warn('Socket directory not accessible: ' .. socket_dir)
-  end
-
-  -- Plugin status
-  if state.plugin_enabled then
-    health.ok('Plugin enabled')
-  else
-    health.warn('Plugin disabled')
-  end
-
-  if state.display_process then
-    health.ok('TUI process running')
-  else
-    health.info('TUI process not running')
-  end
-
-  if state.socket_connected then
-    health.ok('Socket connected')
-  else
-    health.info('Socket not connected')
-  end
-end
 
 -- Helper function to check if LSP clients are available
 local function has_lsp_clients()
@@ -263,7 +198,7 @@ local function start_display_process()
   -- Find TUI binary
   local binary_path = find_tui_binary()
   if not binary_path then
-    vim.notify("TUI binary not found. Run :checkhealth nvim-hoverfloat for help.", vim.log.levels.ERROR)
+    vim.notify("TUI binary not found. Run `make install` to build the binary.", vim.log.levels.ERROR)
     return false
   end
 
@@ -391,28 +326,13 @@ local function setup_commands()
       vim.defer_fn(start_display_process, 500)
     elseif action == 'status' then
       print(vim.inspect(M.get_status()))
-    elseif action == 'health' then
-      M.health()
-    elseif action == 'debug' then
-      -- Force trigger LSP collection for debugging
-      vim.notify("Debug: Forcing LSP data collection...", vim.log.levels.INFO)
-      vim.notify("Debug: Last sent hash: " .. (state.last_sent_hash or "none"), vim.log.levels.INFO)
-      -- Enable socket debug temporarily for this command
-      socket_client.enable_debug()
-      -- Force update by clearing cache
-      state.last_sent_hash = nil
-      update_context()
-      -- Disable debug after brief delay
-      vim.defer_fn(function()
-        socket_client.disable_debug()
-      end, 2000)
     else
-      vim.notify('Usage: ContextWindow [open|close|toggle|restart|status|health|debug]', vim.log.levels.INFO)
+      vim.notify('Usage: ContextWindow [open|close|toggle|restart|status]', vim.log.levels.INFO)
     end
   end, {
     nargs = '?',
     complete = function()
-      return { 'open', 'close', 'toggle', 'restart', 'status', 'health', 'debug' }
+      return { 'open', 'close', 'toggle', 'restart', 'status' }
     end,
     desc = 'Manage LSP context window'
   })
@@ -508,7 +428,6 @@ M.get_status = function()
     -- Only track last sent message hash
     last_sent_hash = state.last_sent_hash,
     lsp_collection_in_progress = state.lsp_collection_in_progress,
-    lsp_cache_stats = lsp_collector.get_cache_stats(),
   }
 end
 
@@ -526,12 +445,5 @@ M.set_binary_path = function(path)
   end
 end
 
--- Clear content cache (useful for debugging or forcing updates)
-M.clear_content_cache = function()
-  state.last_sent_hash = nil
-  state.lsp_collection_in_progress = false
-  lsp_collector.clear_cache()
-  vim.notify("Content cache cleared", vim.log.levels.INFO)
-end
 
 return M

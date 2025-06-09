@@ -12,23 +12,7 @@ local state = {
 local config = {
   connect_timeout = 5000, -- 5 seconds
   write_timeout = 1000,   -- 1 second
-  debug = false,
 }
-
-local function debug_log(message)
-  if config.debug then
-    print("[SocketClient] " .. message)
-  end
-end
-
-function M.enable_debug()
-  config.debug = true
-  debug_log("Debug logging enabled")
-end
-
-function M.disable_debug()
-  config.debug = false
-end
 
 local function create_message(msg_type, data)
   local message = {
@@ -40,65 +24,41 @@ local function create_message(msg_type, data)
   return json_str
 end
 
-local function generate_debug_message(msg_type, data, json_message)
-  local timestamp = os.date("%H:%M:%S.%03d", math.floor(vim.uv.now() / 1000))
-  local base_info = string.format("[%s] Sending %s (%d bytes)", timestamp, msg_type, #json_message)
-
-  if msg_type == "context_update" then
-    local hover_info = data.hover and #data.hover > 0 and
-        string.format("with_hover_%d_lines", #data.hover) or "no_hover"
-    return string.format("%s, %s, %s:%d", base_info, hover_info,
-      data.file or "unknown", data.line or 0)
-  elseif msg_type == "error" then
-    return string.format("%s, error: %s", base_info, data.error or "unknown")
-  elseif msg_type == "ping" then
-    return string.format("%s, timestamp: %d", base_info, data.timestamp or 0)
-  elseif msg_type == "status" then
-    return string.format("%s, status update", base_info)
-  else
-    return string.format("%s, custom message", base_info)
-  end
-end
-
 local function send_raw(msg_type, data, callback)
   callback = callback or function() end
 
   local json_message = create_message(msg_type, data)
-  local debug_msg = generate_debug_message(msg_type, data, json_message)
-  debug_log(debug_msg)
 
   local socket = uv.new_pipe(false)
   if not socket then
-    debug_log("Failed to create socket")
     callback(false, "Failed to create socket")
     return false
   end
 
   -- Set up timeout that gets cancelled on success
   local timeout_timer = vim.fn.timer_start(5000, function()
-    debug_log("Send timeout - closing connection")
     socket:close()
     callback(false, "Connection timeout")
   end)
 
   socket:connect(state.socket_path, function(err)
     if err then
-      debug_log("Connection failed: " .. err)
-      vim.fn.timer_stop(timeout_timer)
+      vim.schedule(function()
+        vim.fn.timer_stop(timeout_timer)
+      end)
       socket:close()
       callback(false, "Connection failed: " .. err)
       return
     end
-    debug_log("Connected, sending data")
 
     socket:write(json_message, function(write_err)
-      vim.fn.timer_stop(timeout_timer)
+      vim.schedule(function()
+        vim.fn.timer_stop(timeout_timer)
+      end)
       if write_err then
-        debug_log("Write failed: " .. write_err)
         socket:close()
         callback(false, "Write failed: " .. write_err)
       else
-        debug_log("Data sent successfully")
         socket:close()
         callback(true, "Success")
       end
@@ -110,13 +70,11 @@ end
 function M.set_socket_path(socket_path)
   if socket_path then
     state.socket_path = socket_path
-    debug_log("Socket path set to: " .. state.socket_path)
   end
   return true
 end
 
 function M.clear_socket_path()
-  debug_log("Clearing socket path")
   state.socket_path = nil
 end
 
@@ -164,24 +122,20 @@ function M.setup(user_config)
   if user_config and user_config.socket_path then
     state.socket_path = user_config.socket_path
   end
-  debug_log("Socket client initialized")
 end
 
 function M.test_connection()
   if not state.socket_path then
-    debug_log("No socket path configured, cannot test")
     return false
   end
   return M.send_ping()
 end
 
 function M.cleanup()
-  debug_log("Cleaning up socket client")
   M.clear_socket_path()
 end
 
 function M.reset()
-  debug_log("Resetting connection state")
   M.clear_socket_path()
   state.connection_attempts = 0
 end

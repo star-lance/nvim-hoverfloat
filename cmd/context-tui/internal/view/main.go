@@ -5,10 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/config"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
 )
@@ -27,11 +25,11 @@ type ViewData struct {
 	MenuVisible    bool
 	MenuSelection  int
 
-	// Viewports for scrollable content
-	HoverViewport      *viewport.Model
-	ReferencesViewport *viewport.Model
-	DefinitionViewport *viewport.Model
-	TypeInfoViewport   *viewport.Model
+	// Viewport fields removed - no longer using scrollable viewports
+	HoverViewport      interface{} // Placeholder to maintain compatibility
+	ReferencesViewport interface{}
+	DefinitionViewport interface{}
+	TypeInfoViewport   interface{}
 }
 
 // FocusArea constants (matching the model)
@@ -62,15 +60,7 @@ func Render(width, height int, data *ViewData, s *styles.Styles) string {
 		footer,
 	)
 
-	// Overlay menu if visible
-	if data.MenuVisible {
-		menu := renderMenu(data, s)
-		// Position menu in center-right
-		menuX := width - 35
-		menuY := 5
-		view = overlayMenu(view, menu, menuX, menuY)
-	}
-
+	// Menu system removed for simplicity
 	return view
 }
 
@@ -179,7 +169,7 @@ func renderContent(width, height int, data *ViewData, s *styles.Styles) string {
 
 // renderHoverSection creates the hover documentation section
 func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) string {
-	if data.Context == nil || !data.Context.HasHover() || data.HoverViewport == nil {
+	if data.Context == nil || !data.Context.HasHover() {
 		return ""
 	}
 
@@ -191,27 +181,14 @@ func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) str
 
 	// Header with full width background
 	headerText := "📖 Documentation"
-	if focused {
-		headerText += " (⬇️⬆️ scroll)"
-	}
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format hover content and set it in the viewport
-	content := formatHoverContent(data.Context.Hover, data.HoverViewport.Width, s)
-	data.HoverViewport.SetContent(content)
+	// Format hover content directly (no viewport)
+	content := formatHoverContent(data.Context.Hover, width-4, s)
 
-	// Get the viewport's view (handles scrolling)
-	viewportContent := data.HoverViewport.View()
-
-	// Get background color from config
-	bgColor := config.Config.Colors.Background.Secondary
-	if focused {
-		bgColor = config.Config.Colors.Background.Selection
-	}
-
-	// Enforce consistent full-width background on viewport content
-	contentFormatted := enforceConsistentBackground(viewportContent, width-4, bgColor)
+	// Use content as-is (simplified, no viewport scrolling)
+	contentFormatted := content
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
@@ -244,14 +221,8 @@ func renderReferencesSection(width, height int, data *ViewData, s *styles.Styles
 	// Format references list with consistent background
 	content := formatReferences(data.Context, width-4, s)
 
-	// Get background color from config
-	bgColor := config.Config.Colors.Background.Secondary
-	if focused {
-		bgColor = config.Config.Colors.Background.Selection
-	}
-
-	// Enforce consistent full-width background
-	contentFormatted := enforceConsistentBackground(content, width-4, bgColor)
+	// Use content as-is (no special background enforcement)
+	contentFormatted := content
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
@@ -284,14 +255,8 @@ func renderDefinitionSection(width, height int, data *ViewData, s *styles.Styles
 		def.Col,
 	)
 
-	// Get background color from config
-	bgColor := config.Config.Colors.Background.Secondary
-	if focused {
-		bgColor = config.Config.Colors.Background.Selection
-	}
-
-	// Enforce consistent full-width background
-	contentFormatted := enforceConsistentBackground(location, width-4, bgColor)
+	// Use location content as-is (no special background enforcement)
+	contentFormatted := location
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
@@ -324,14 +289,8 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 		typedef.Col,
 	)
 
-	// Get background color from config
-	bgColor := config.Config.Colors.Background.Secondary
-	if focused {
-		bgColor = config.Config.Colors.Background.Selection
-	}
-
-	// Enforce consistent full-width background
-	contentFormatted := enforceConsistentBackground(location, width-4, bgColor)
+	// Use location content as-is (no special background enforcement)
+	contentFormatted := location
 
 	// Join and render section with full width
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
@@ -339,47 +298,6 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
-// renderMenu creates the interactive menu overlay
-func renderMenu(data *ViewData, s *styles.Styles) string {
-	title := s.Subtitle.Render("Toggle Sections")
-
-	items := []string{
-		formatMenuItem("H", "Hover", data.ShowHover, data.MenuSelection == 0, s),
-		formatMenuItem("R", "References", data.ShowReferences, data.MenuSelection == 1, s),
-		formatMenuItem("D", "Definition", data.ShowDefinition, data.MenuSelection == 2, s),
-		formatMenuItem("T", "Type Info", data.ShowTypeInfo, data.MenuSelection == 3, s),
-	}
-
-	content := lipgloss.JoinVertical(lipgloss.Left, append([]string{title, ""}, items...)...)
-
-	help := s.Comment.Render("j/k: navigate  enter: toggle  esc: close")
-
-	menu := s.Menu.Render(lipgloss.JoinVertical(
-		lipgloss.Left,
-		content,
-		"",
-		help,
-	))
-
-	return menu
-}
-
-// formatMenuItem formats a single menu item
-func formatMenuItem(key, label string, enabled, selected bool, s *styles.Styles) string {
-	var style lipgloss.Style
-	if selected {
-		style = s.MenuItemActive
-	} else {
-		style = s.MenuItem
-	}
-
-	statusIcon := "○"
-	if enabled {
-		statusIcon = "●"
-	}
-
-	return style.Render(fmt.Sprintf("%s %s %s", s.Keybind.Render(key), statusIcon, label))
-}
 
 // Helper functions
 
@@ -493,11 +411,9 @@ func renderNoDataMessage(width, height int, s *styles.Styles) string {
 }
 
 func renderFooter(width int, data *ViewData, s *styles.Styles) string {
-	// Key bindings help
+	// Key bindings help (simplified)
 	bindings := []string{
-		s.Keybind.Render("?") + " menu",
 		s.Keybind.Render("hjkl") + " navigate",
-		s.Keybind.Render("ctrl+u/d") + " scroll",
 		s.Keybind.Render("enter") + " toggle",
 		s.Keybind.Render("q") + " quit",
 	}
@@ -514,11 +430,6 @@ func renderFooter(width int, data *ViewData, s *styles.Styles) string {
 
 // Utility functions
 
-func overlayMenu(base, menu string, x, y int) string {
-	// This is a simplified overlay - in a real implementation,
-	// you'd need more sophisticated positioning
-	return base + "\n" + menu
-}
 
 func centerContent(content string, width int) string {
 	lines := strings.Split(content, "\n")
@@ -560,49 +471,6 @@ func max(a, b int) int {
 	return b
 }
 
-// enforceConsistentBackground ensures EVERY line has consistent full-width background
-func enforceConsistentBackground(content string, width int, bgColor string) string {
-	if config.Config == nil || !config.Config.Formatting.Sections.ConsistentBackgrounds {
-		return content
-	}
-
-	lines := strings.Split(content, "\n")
-	var processedLines []string
-
-	// Background style for consistent formatting
-	bgStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color(bgColor)).
-		Width(width)
-
-	for _, line := range lines {
-		// Strip any existing styling that might interfere
-		cleanLine := stripANSI(line)
-		// Apply consistent background to full width
-		styledLine := bgStyle.Render(cleanLine)
-		processedLines = append(processedLines, styledLine)
-	}
-
-	return strings.Join(processedLines, "\n")
-}
-
-// stripANSI removes ANSI escape sequences to get clean text
-func stripANSI(s string) string {
-	// Simple ANSI stripping - removes common escape sequences
-	cleaned := s
-	// Remove color codes, styles, etc.
-	for strings.Contains(cleaned, "\x1b[") {
-		start := strings.Index(cleaned, "\x1b[")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(cleaned[start:], "m")
-		if end == -1 {
-			break
-		}
-		cleaned = cleaned[:start] + cleaned[start+end+1:]
-	}
-	return cleaned
-}
 
 // isMarkdownContent detects if content contains markdown formatting
 func isMarkdownContent(content []string) bool {
@@ -644,30 +512,14 @@ func isMarkdownContent(content []string) bool {
 	return float64(markdownIndicators)/float64(totalLines) >= 0.25
 }
 
-// renderMarkdown uses glamour to render markdown content with centralized styling
+// renderMarkdown uses glamour to render markdown content
 func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
-	// Use centralized markdown configuration
-	if config.Config == nil {
-		return content, fmt.Errorf("config not loaded")
-	}
-	
-	if !config.Config.Markdown.UseGlamour {
-		return content, fmt.Errorf("glamour disabled")
-	}
-
-	// Use configured theme
-	style := config.Config.Markdown.Theme
-	if style == "" {
-		style = "dark" // fallback
-	}
+	// Use dark theme for consistency
+	style := "dark"
 
 	var options []glamour.TermRendererOption
 	options = append(options, glamour.WithStandardStyle(style))
-
-	if config.Config.Markdown.WordWrap {
-		options = append(options, glamour.WithWordWrap(width))
-	}
-
+	options = append(options, glamour.WithWordWrap(width))
 	options = append(options, glamour.WithEmoji())
 
 	renderer, err := glamour.NewTermRenderer(options...)
