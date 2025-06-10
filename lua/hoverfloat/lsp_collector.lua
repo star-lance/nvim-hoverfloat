@@ -44,29 +44,18 @@ local function has_lsp_capability(capability)
   return false
 end
 
--- Simplified hover using Neovim's built-in handler
+-- Simplified hover using direct LSP request
 local function get_hover_info(callback)
   if not has_lsp_capability('hoverProvider') then
     callback(nil)
     return
   end
 
-  log_debug("Requesting hover using vim.lsp.buf.hover")
+  log_debug("Requesting hover using direct buf_request")
   
-  -- Capture the hover response by temporarily intercepting the handler
-  local original_handler = vim.lsp.handlers['textDocument/hover']
-  local timeout_timer = nil
-  
-  vim.lsp.handlers['textDocument/hover'] = function(err, result, ctx, config)
-    -- Restore original handler immediately
-    vim.lsp.handlers['textDocument/hover'] = original_handler
-    
-    -- Cancel timeout
-    if timeout_timer then
-      vim.fn.timer_stop(timeout_timer)
-      timeout_timer = nil
-    end
-    
+  -- Make direct LSP request without handler interception
+  local params = vim.lsp.util.make_position_params()
+  vim.lsp.buf_request(0, 'textDocument/hover', params, function(err, result, ctx, config)
     if err or not result or not result.contents then
       log_debug("Hover returned no content")
       callback(nil)
@@ -86,44 +75,21 @@ local function get_hover_info(callback)
     
     log_debug("Hover info retrieved", { lines = #filtered_lines })
     callback(#filtered_lines > 0 and filtered_lines or nil)
-  end
-  
-  -- Set timeout in case hover never responds
-  timeout_timer = vim.fn.timer_start(2000, function()
-    vim.lsp.handlers['textDocument/hover'] = original_handler
-    log_debug("Hover request timed out")
-    callback(nil)
-  end)
-  
-  -- Make the hover request without triggering popup
-  local params = vim.lsp.util.make_position_params()
-  vim.lsp.buf_request(0, 'textDocument/hover', params, function(err, result, ctx, config)
-    if original_handler then
-      original_handler(err, result, ctx, config)
-    end
   end)
 end
 
--- Simplified definition using Neovim's location handling
+-- Simplified definition using direct LSP request
 local function get_definition_info(callback)
   if not has_lsp_capability('definitionProvider') then
     callback(nil)
     return
   end
 
-  log_debug("Requesting definition using vim.lsp.buf.definition")
+  log_debug("Requesting definition using direct buf_request")
   
-  local original_handler = vim.lsp.handlers['textDocument/definition']
-  local timeout_timer = nil
-  
-  vim.lsp.handlers['textDocument/definition'] = function(err, result, ctx, config)
-    vim.lsp.handlers['textDocument/definition'] = original_handler
-    
-    if timeout_timer then
-      vim.fn.timer_stop(timeout_timer)
-      timeout_timer = nil
-    end
-    
+  -- Make direct LSP request without handler interception
+  local params = vim.lsp.util.make_position_params()
+  vim.lsp.buf_request(0, 'textDocument/definition', params, function(err, result, ctx, config)
     if err or not result then
       log_debug("Definition returned no result")
       callback(nil)
@@ -147,44 +113,24 @@ local function get_definition_info(callback)
       end
     end
     
+    log_debug("No valid definition found")
     callback(nil)
-  end
-  
-  timeout_timer = vim.fn.timer_start(2000, function()
-    vim.lsp.handlers['textDocument/definition'] = original_handler
-    log_debug("Definition request timed out")
-    callback(nil)
-  end)
-  
-  -- Make the definition request without triggering navigation
-  local params = vim.lsp.util.make_position_params()
-  vim.lsp.buf_request(0, 'textDocument/definition', params, function(err, result, ctx, config)
-    if original_handler then
-      original_handler(err, result, ctx, config)
-    end
   end)
 end
 
--- Simplified references using Neovim's location handling
+-- Simplified references using direct LSP request
 local function get_references_info(callback, max_refs)
   if not has_lsp_capability('referencesProvider') then
     callback(nil)
     return
   end
 
-  log_debug("Requesting references using vim.lsp.buf.references")
+  log_debug("Requesting references using direct buf_request")
   
-  local original_handler = vim.lsp.handlers['textDocument/references']
-  local timeout_timer = nil
-  
-  vim.lsp.handlers['textDocument/references'] = function(err, result, ctx, config)
-    vim.lsp.handlers['textDocument/references'] = original_handler
-    
-    if timeout_timer then
-      vim.fn.timer_stop(timeout_timer)
-      timeout_timer = nil
-    end
-    
+  -- Make direct LSP request without handler interception
+  local params = vim.lsp.util.make_position_params()
+  params.context = { includeDeclaration = true }
+  vim.lsp.buf_request(0, 'textDocument/references', params, function(err, result, ctx, config)
     if err or not result then
       log_debug("References returned no result")
       callback(nil)
@@ -219,44 +165,21 @@ local function get_references_info(callback, max_refs)
       displayed = #ref_info.locations 
     })
     callback(ref_info)
-  end
-  
-  timeout_timer = vim.fn.timer_start(2000, function()
-    vim.lsp.handlers['textDocument/references'] = original_handler
-    log_debug("References request timed out")
-    callback(nil)
-  end)
-  
-  -- Make the references request without triggering navigation
-  local params = vim.lsp.util.make_position_params()
-  params.context = { includeDeclaration = true }
-  vim.lsp.buf_request(0, 'textDocument/references', params, function(err, result, ctx, config)
-    if original_handler then
-      original_handler(err, result, ctx, config)
-    end
   end)
 end
 
--- Simplified type definition
+-- Simplified type definition using direct LSP request
 local function get_type_definition_info(callback)
   if not has_lsp_capability('typeDefinitionProvider') then
     callback(nil)
     return
   end
 
-  log_debug("Requesting type definition using vim.lsp.buf.type_definition")
+  log_debug("Requesting type definition using direct buf_request")
   
-  local original_handler = vim.lsp.handlers['textDocument/typeDefinition']
-  local timeout_timer = nil
-  
-  vim.lsp.handlers['textDocument/typeDefinition'] = function(err, result, ctx, config)
-    vim.lsp.handlers['textDocument/typeDefinition'] = original_handler
-    
-    if timeout_timer then
-      vim.fn.timer_stop(timeout_timer)
-      timeout_timer = nil
-    end
-    
+  -- Make direct LSP request without handler interception
+  local params = vim.lsp.util.make_position_params()
+  vim.lsp.buf_request(0, 'textDocument/typeDefinition', params, function(err, result, ctx, config)
     if err or not result then
       log_debug("Type definition returned no result")
       callback(nil)
@@ -279,16 +202,9 @@ local function get_type_definition_info(callback)
       end
     end
     
-    callback(nil)
-  end
-  
-  timeout_timer = vim.fn.timer_start(2000, function()
-    vim.lsp.handlers['textDocument/typeDefinition'] = original_handler
-    log_debug("Type definition request timed out")
+    log_debug("No valid type definition found")
     callback(nil)
   end)
-  
-  vim.lsp.buf.type_definition()
 end
 
 -- Main function - much simpler now!

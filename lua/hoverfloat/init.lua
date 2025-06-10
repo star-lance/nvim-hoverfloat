@@ -603,8 +603,8 @@ local function setup_commands()
       local log_path = logger.get_log_path()
       if log_path then
         log_info("Current log file path", { path = log_path })
-        -- Only show this in the editor for path info
-        vim.notify("Log file: " .. log_path, vim.log.levels.INFO)
+        -- Don't show popup - just log it
+        print("Log file: " .. log_path)
       else
         log_warn("No log file available", { debug_enabled = state.config.communication.debug })
       end
