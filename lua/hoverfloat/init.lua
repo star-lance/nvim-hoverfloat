@@ -13,6 +13,7 @@ local state = {
   last_sent_hash = nil,
   lsp_collection_in_progress = false,
   connection_status_timer = nil,
+  total_lsp_requests = 0,
 }
 
 
