@@ -7,25 +7,21 @@ local state = {
   socket = nil,
   connected = false,
   connecting = false,
-  reconnect_timer = nil,
-  heartbeat_timer = nil,
-  connection_check_timer = nil,
   message_queue = {},
-  last_heartbeat_sent = 0,
-  last_heartbeat_received = 0,
   connection_attempts = 0,
   incoming_buffer = "",
+  last_activity = 0,
+  reconnect_scheduled = false,
 }
 
 -- Configuration
 local config = {
   reconnect_delay = 2000,       -- 2 seconds initial delay
   max_reconnect_delay = 30000,  -- 30 seconds max delay
-  heartbeat_interval = 10000,   -- 10 seconds
   connection_timeout = 5000,    -- 5 seconds
-  heartbeat_timeout = 30000,    -- 30 seconds before considering connection dead
   max_queue_size = 100,         -- Maximum queued messages
   max_connection_attempts = 10, -- Max attempts before giving up
+  activity_timeout = 60000,     -- 60 seconds of inactivity before considering connection stale
 }
 
 -- Message creation helper
@@ -49,13 +45,22 @@ end
 
 local logger = require('hoverfloat.logger')
 
--- Safe timer stop that avoids fast event context errors
-local function safe_timer_stop(timer)
-  if timer then
-    vim.schedule(function()
-      vim.fn.timer_stop(timer)
-    end)
+-- Event-driven reconnection with exponential backoff
+local function schedule_reconnect_attempt()
+  if state.reconnect_scheduled or state.connected or state.connecting then
+    return
   end
+  
+  state.reconnect_scheduled = true
+  local delay = get_reconnect_delay()
+  logger.socket("info", "Scheduling reconnection", { delay_ms = delay, attempt = state.connection_attempts + 1 })
+  
+  vim.defer_fn(function()
+    state.reconnect_scheduled = false
+    if not state.connected and not state.connecting then
+      create_connection()
+    end
+  end, delay)
 end
 
 -- Clean up connection resources
@@ -70,16 +75,7 @@ local function cleanup_connection()
   state.connected = false
   state.connecting = false
   state.incoming_buffer = ""
-
-  if state.heartbeat_timer then
-    vim.fn.timer_stop(state.heartbeat_timer)
-    state.heartbeat_timer = nil
-  end
-
-  if state.connection_check_timer then
-    vim.fn.timer_stop(state.connection_check_timer)
-    state.connection_check_timer = nil
-  end
+  state.last_activity = 0
 end
 
 local function handle_connection_failure(reason)
@@ -92,22 +88,25 @@ local function handle_connection_failure(reason)
   state.connection_attempts = state.connection_attempts + 1
 
   if state.connection_attempts < config.max_connection_attempts then
-    schedule_reconnect()
+    schedule_reconnect_attempt()
+  else
+    logger.socket("error", "Max reconnection attempts reached", { max_attempts = config.max_connection_attempts })
   end
 end
 
-function schedule_reconnect()
-  if state.reconnect_timer then
-    vim.fn.timer_stop(state.reconnect_timer)
+-- Connection health check (replaces heartbeat)
+local function check_connection_health()
+  if not state.connected then
+    return false
   end
-
-  local delay = get_reconnect_delay()
-  logger.socket("info", "Scheduling reconnection", { delay_ms = delay })
-
-  state.reconnect_timer = vim.fn.timer_start(delay, function()
-    state.reconnect_timer = nil
-    create_connection()
-  end)
+  
+  local now = vim.uv.now()
+  if state.last_activity > 0 and (now - state.last_activity) > config.activity_timeout then
+    logger.socket("warn", "Connection appears stale", { last_activity_age = now - state.last_activity })
+    return false
+  end
+  
+  return true
 end
 
 local function handle_message(json_str)
@@ -117,10 +116,14 @@ local function handle_message(json_str)
     return
   end
 
-  if message.type == "pong" then
-    state.last_heartbeat_received = vim.uv.now()
-  elseif message.type == "error" then
+  -- Update activity timestamp on any message
+  state.last_activity = vim.uv.now()
+  
+  if message.type == "error" then
     logger.socket("error", "TUI reported error", message.data and message.data.error or "Unknown error")
+  elseif message.type == "pong" then
+    -- Optional: handle pong if manual ping is sent
+    logger.socket("debug", "Received pong")
   end
 end
 
@@ -128,6 +131,9 @@ end
 local function handle_incoming_data(data)
   if not data then return end
 
+  -- Update activity on any data received
+  state.last_activity = vim.uv.now()
+  
   -- Append to buffer
   state.incoming_buffer = state.incoming_buffer .. data
 
@@ -146,11 +152,16 @@ local function handle_incoming_data(data)
 end
 
 local function send_raw_message(json_message)
+  -- Check connection health before sending
+  if state.connected and not check_connection_health() then
+    handle_connection_failure("Connection health check failed")
+  end
+  
   if not state.connected or not state.socket then
     if #state.message_queue < config.max_queue_size then
       table.insert(state.message_queue, json_message)
     end
-    if not state.connecting then
+    if not state.connecting and not state.reconnect_scheduled then
       create_connection()
     end
     return false
@@ -159,6 +170,9 @@ local function send_raw_message(json_message)
   local ok = state.socket:write(json_message, function(err)
     if err then
       handle_connection_failure("Write failed: " .. err)
+    else
+      -- Update activity on successful write
+      state.last_activity = vim.uv.now()
     end
   end)
 
@@ -184,34 +198,14 @@ local function flush_message_queue()
   state.message_queue = {}
 end
 
-local function start_heartbeat()
-  if state.heartbeat_timer then
-    vim.fn.timer_stop(state.heartbeat_timer)
+-- Manual ping function for connection testing
+local function send_ping()
+  if not state.connected then
+    return false
   end
-
-  state.heartbeat_timer = vim.fn.timer_start(config.heartbeat_interval, function()
-    if not state.connected then
-      return
-    end
-
-    local now = vim.uv.now()
-    if state.last_heartbeat_received > 0 and (now - state.last_heartbeat_received) > config.heartbeat_timeout then
-      handle_connection_failure("Heartbeat timeout")
-      return
-    end
-
-    local ping_msg = create_message("ping", { timestamp = now })
-    if send_raw_message(ping_msg) then
-      state.last_heartbeat_sent = now
-    end
-  end, { ['repeat'] = -1 })
-end
-
-local function stop_heartbeat()
-  if state.heartbeat_timer then
-    vim.fn.timer_stop(state.heartbeat_timer)
-    state.heartbeat_timer = nil
-  end
+  
+  local ping_msg = create_message("ping", { timestamp = vim.uv.now() })
+  return send_raw_message(ping_msg)
 end
 
 function create_connection()
@@ -228,10 +222,10 @@ function create_connection()
     return
   end
 
-  local timeout_timer = nil
   local connection_completed = false
 
-  timeout_timer = vim.fn.timer_start(config.connection_timeout, function()
+  -- Use vim.defer_fn for timeout instead of timer
+  vim.defer_fn(function()
     if not connection_completed then
       connection_completed = true
       if socket and not socket:is_closing() then
@@ -240,15 +234,10 @@ function create_connection()
       state.connecting = false
       handle_connection_failure("Connection timeout")
     end
-  end)
+  end, config.connection_timeout)
 
   socket:connect(state.socket_path, function(err)
     connection_completed = true
-    if timeout_timer then
-      vim.schedule(function()
-        vim.fn.timer_stop(timeout_timer)
-      end)
-    end
 
     if err then
       socket:close()
@@ -261,6 +250,7 @@ function create_connection()
     state.connecting = false
     state.connection_attempts = 0
     state.incoming_buffer = ""
+    state.last_activity = vim.uv.now()
 
     logger.socket("info", "Socket connection established")
 
@@ -277,7 +267,6 @@ function create_connection()
       end
     end)
 
-    start_heartbeat()
     flush_message_queue()
   end)
 end
@@ -300,12 +289,7 @@ function M.connect(socket_path)
 end
 
 function M.disconnect()
-  if state.reconnect_timer then
-    vim.fn.timer_stop(state.reconnect_timer)
-    state.reconnect_timer = nil
-  end
-
-  stop_heartbeat()
+  state.reconnect_scheduled = false
 
   if state.connected and state.socket then
     local disconnect_msg = create_message("disconnect", {})
@@ -335,8 +319,7 @@ function M.send_status(status_data)
 end
 
 function M.send_ping()
-  local message = create_message("ping", { timestamp = vim.uv.now() })
-  return send_raw_message(message)
+  return send_ping()
 end
 
 function M.send_custom(msg_type, data)
@@ -361,10 +344,11 @@ function M.get_status()
     socket_path = state.socket_path,
     queued_messages = #state.message_queue,
     connection_attempts = state.connection_attempts,
-    last_heartbeat_sent = state.last_heartbeat_sent,
-    last_heartbeat_received = state.last_heartbeat_received,
+    last_activity = state.last_activity,
+    reconnect_scheduled = state.reconnect_scheduled,
     max_connection_attempts = config.max_connection_attempts,
     reconnect_delay = get_reconnect_delay(),
+    connection_healthy = check_connection_health(),
   }
 end
 
@@ -375,6 +359,7 @@ end
 function M.force_reconnect()
   cleanup_connection()
   state.connection_attempts = 0
+  state.reconnect_scheduled = false
   create_connection()
 end
 
@@ -403,17 +388,20 @@ function M.get_connection_health()
     socket_exists = vim.fn.filereadable(state.socket_path) == 1,
     queue_size = #state.message_queue,
     connection_attempts = state.connection_attempts,
+    healthy = check_connection_health(),
   }
 
   if state.connected then
-    health.status = "connected"
-
-    if state.last_heartbeat_received > 0 then
-      health.last_heartbeat_age = now - state.last_heartbeat_received
-      health.heartbeat_healthy = health.last_heartbeat_age < config.heartbeat_timeout
+    health.status = health.healthy and "connected" or "stale"
+    
+    if state.last_activity > 0 then
+      health.last_activity_age = now - state.last_activity
+      health.activity_healthy = health.last_activity_age < config.activity_timeout
     end
   elseif state.connecting then
     health.status = "connecting"
+  elseif state.reconnect_scheduled then
+    health.status = "reconnecting"
   else
     health.status = "disconnected"
   end
@@ -425,12 +413,32 @@ function M.cleanup()
   M.disconnect()
 end
 
+-- Manual recovery functions
+function M.check_and_recover()
+  if state.connected and not check_connection_health() then
+    logger.socket("info", "Connection unhealthy, forcing reconnect")
+    M.force_reconnect()
+    return true
+  end
+  return false
+end
+
+function M.retry_failed_connection()
+  if not state.connected and not state.connecting and not state.reconnect_scheduled then
+    logger.socket("info", "Manual retry triggered")
+    state.connection_attempts = math.max(0, state.connection_attempts - 1) -- Give it another chance
+    schedule_reconnect_attempt()
+    return true
+  end
+  return false
+end
+
 -- Reset function for testing
 function M.reset()
   M.disconnect()
   state.connection_attempts = 0
-  state.last_heartbeat_sent = 0
-  state.last_heartbeat_received = 0
+  state.last_activity = 0
+  state.reconnect_scheduled = false
 end
 
 -- Auto-connect on first use
