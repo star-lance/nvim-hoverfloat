@@ -49,6 +49,15 @@ end
 
 local logger = require('hoverfloat.logger')
 
+-- Safe timer stop that avoids fast event context errors
+local function safe_timer_stop(timer)
+  if timer then
+    vim.schedule(function()
+      vim.fn.timer_stop(timer)
+    end)
+  end
+end
+
 -- Clean up connection resources
 local function cleanup_connection()
   if state.socket then
@@ -234,10 +243,12 @@ function create_connection()
   end)
 
   socket:connect(state.socket_path, function(err)
-    if timeout_timer then
-      vim.fn.timer_stop(timeout_timer)
-    end
     connection_completed = true
+    if timeout_timer then
+      vim.schedule(function()
+        vim.fn.timer_stop(timeout_timer)
+      end)
+    end
 
     if err then
       socket:close()
