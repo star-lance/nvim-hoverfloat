@@ -1,12 +1,10 @@
--- lua/hoverfloat/init.lua - Main plugin entry point (simplified)
+-- lua/hoverfloat/init.lua - Simplified plugin entry point
 local M = {}
 
 -- Core modules
-local config = require('hoverfloat.config')
 local lsp_service = require('hoverfloat.core.lsp_service')
 local position = require('hoverfloat.core.position')
 local performance = require('hoverfloat.core.performance')
-
 local socket_client = require('hoverfloat.communication.socket_client')
 local prefetcher = require('hoverfloat.prefetch.prefetcher')
 local tui_manager = require('hoverfloat.process.tui_manager')
@@ -14,13 +12,11 @@ local logger = require('hoverfloat.utils.logger')
 
 -- Plugin state
 local state = {
-  enabled = true,
   last_sent_position = nil,
 }
 
--- Check if context should be updated
 local function should_update_context()
-  return state.enabled and position.has_lsp_clients()
+  return true
 end
 
 -- Get position identifier for deduplication
@@ -34,7 +30,6 @@ local function update_context()
     return
   end
 
-  -- Check if we're at the same position
   local current_position = get_position_identifier()
   if current_position == state.last_sent_position then
     return
@@ -45,12 +40,11 @@ local function update_context()
   -- Try instant lookup from prefetcher first
   prefetcher.get_instant_context_data(function(instant_data)
     if instant_data then
-      -- INSTANT RESPONSE from cache!
       local response_time = performance.complete_request(start_time, true, false)
       state.last_sent_position = current_position
       socket_client.send_context_update(instant_data)
 
-      if response_time < 2000 then -- Less than 2ms
+      if response_time < 2000 then
         logger.debug("Performance", string.format("Instant response: %.2fμs", response_time))
       end
       return
@@ -62,12 +56,11 @@ end
 local function setup_autocmds()
   local group = vim.api.nvim_create_augroup("HoverFloatContext", { clear = true })
 
-  -- Track cursor movement (only if socket is connected)
+  -- Track cursor movement
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
     group = group,
     callback = function()
-      if not state.enabled then return end
-      if socket_client.is_connected() then
+      if state.enabled and socket_client.is_connected() then
         update_context()
       end
     end,
@@ -77,20 +70,25 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("BufEnter", {
     group = group,
     callback = function()
-      if not state.enabled then return end
-      if position.has_lsp_clients() and socket_client.is_connected() then
+      if state.enabled and position.has_lsp_clients() and socket_client.is_connected() then
         update_context()
       end
     end,
   })
 
-  -- Handle LSP attach/detach
+  -- Auto-start TUI when LSP attaches
   vim.api.nvim_create_autocmd("LspAttach", {
     group = group,
     callback = function()
-      if not state.enabled then return end
-      if socket_client.is_connected() then
-        update_context()
+      if state.enabled then
+        -- Start TUI if not already running
+        if not tui_manager.is_running() then
+          vim.defer_fn(function()
+            tui_manager.start()
+          end, 1000) -- 1 second delay to let LSP settle
+        elseif socket_client.is_connected() then
+          update_context()
+        end
       end
     end,
   })
@@ -122,23 +120,13 @@ local function setup_commands()
     elseif action == 'status' then
       local status = M.get_status()
       logger.plugin("info", "HoverFloat Status", status)
-    elseif action == 'performance' then
-      local report = performance.get_performance_report()
-      logger.plugin("info", "Performance Report", { report = report })
-    elseif action == 'warm-cache' then
-      prefetcher.force_prefetch_current_buffer()
-      logger.plugin("info", "Cache warming initiated")
-    elseif action == 'clear-cache' then
-      prefetcher.clear_cache()
-      state.last_sent_position = nil
-      logger.plugin("info", "Prefetch cache cleared")
     else
       logger.plugin("info", 'Usage: ContextWindow [open|close|toggle|restart|status]')
     end
   end, {
     nargs = '?',
     complete = function()
-      return { 'open', 'close', 'toggle', 'restart', 'status', 'performance', 'warm-cache', 'clear-cache' }
+      return { 'open', 'close', 'toggle', 'restart', 'status' }
     end,
     desc = 'Manage LSP context window'
   })
@@ -156,34 +144,21 @@ local function setup_keymaps()
     { desc = 'Restart Context Window', silent = true })
   vim.keymap.set('n', '<leader>cs', ':ContextWindow status<CR>',
     { desc = 'Context Window Status', silent = true })
-  vim.keymap.set('n', '<leader>cp', ':ContextWindow performance<CR>',
-    { desc = 'Show Performance Stats', silent = true })
-  vim.keymap.set('n', '<leader>cw', ':ContextWindow warm-cache<CR>',
-    { desc = 'Warm Prefetch Cache', silent = true })
 end
 
--- Main setup function
+-- Main setup function - ignore any user options
 function M.setup(opts)
-  -- Setup configuration first
-  local current_config = config.setup(opts or {})
+  -- Ignore opts - we know what we want
 
-  -- Setup logging with hardcoded defaults (no more communication.debug)
+  -- Setup logging with hardcoded values
   logger.setup({
-    debug = true, -- Hardcoded default
+    debug = true,
     log_dir = nil -- Use default
   })
 
-  -- Setup all modules
+  -- Setup all modules with hardcoded configurations
   lsp_service.setup()
-
-  -- Setup socket client with simplified config
-  socket_client.setup({
-    socket_path = current_config.socket_path,
-    connection_timeout = 5000,    -- Hardcoded default
-    max_queue_size = 100,         -- Hardcoded default
-    max_messages_per_second = 10, -- Hardcoded default
-  })
-
+  socket_client.setup({}) -- Will use hardcoded values
   tui_manager.setup()
   prefetcher.setup()
 
@@ -195,7 +170,7 @@ function M.setup(opts)
   -- Start performance monitoring
   performance.start_monitoring()
 
-  logger.info("Plugin", "HoverFloat initialized successfully")
+  logger.info("Plugin", "HoverFloat initialized")
 end
 
 -- Public API functions
@@ -203,16 +178,10 @@ M.start = tui_manager.start
 M.stop = tui_manager.stop
 M.toggle = tui_manager.toggle
 M.restart = tui_manager.restart
-
-M.enable = function() state.enabled = true end
-M.disable = function() state.enabled = false end
 M.is_running = tui_manager.is_running
-
-M.connect = socket_client.connect
-M.disconnect = socket_client.disconnect
 M.is_connected = socket_client.is_connected
 
--- Status and diagnostics
+-- Status function
 function M.get_status()
   local socket_status = socket_client.get_status()
   local tui_status = tui_manager.get_status()
@@ -223,8 +192,6 @@ function M.get_status()
     enabled = state.enabled,
     tui_running = tui_status.running,
     socket_connected = socket_status.connected,
-    socket_connecting = socket_status.connecting,
-    config = config.get(),
     socket_status = socket_status,
     tui_status = tui_status,
     prefetch_stats = prefetch_stats,
@@ -232,14 +199,7 @@ function M.get_status()
   }
 end
 
-M.get_config = config.get
 M.force_update = update_context
 M.clear_cache = prefetcher.clear_cache
-
--- Legacy compatibility functions
-M.get_connection_status = socket_client.get_status
-M.get_connection_health = socket_client.get_connection_health
-M.test_connection = socket_client.test_connection
-M.reset_connection = socket_client.reset
 
 return M
