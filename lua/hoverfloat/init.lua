@@ -315,6 +315,8 @@ local function setup_keymaps()
     { desc = 'Warm Prefetch Cache', silent = true })
   vim.keymap.set('n', '<leader>cp', ':ContextWindow performance<CR>',
     { desc = 'Show Performance Stats', silent = true })
+  vim.keymap.set('n', '<leader>cwk', ':ContextWindow performance<CR>',
+    { desc = 'Disable Plugin', silent = true })
 end
 
 -- Main setup function

@@ -1,6 +1,5 @@
 -- lua/hoverfloat/symbol_prefetcher.lua
 local M = {}
-local logger = require('hoverfloat.logger')
 
 -- Prefetcher state
 local prefetch_state = {
