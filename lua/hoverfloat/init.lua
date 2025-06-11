@@ -36,7 +36,7 @@ local default_config = {
 
   communication = {
     socket_path = "/tmp/nvim_context.sock",
-    debug = false, -- Enable debug logging
+    debug = true,  -- Enable debug logging
     log_dir = nil, -- Custom log directory (default: stdpath('cache')/hoverfloat)
   },
 
@@ -61,11 +61,11 @@ local default_config = {
 local function load_window_manager_config(wm_name)
   local config_file = plugin_root .. "/config/" .. wm_name .. "_rules.conf"
   local rules = {}
-  
+
   if vim.fn.filereadable(config_file) == 1 then
     logger.plugin("debug", "Loading window manager config", { file = config_file })
     local lines = vim.fn.readfile(config_file)
-    
+
     for _, line in ipairs(lines) do
       local trimmed = vim.trim(line)
       -- Skip empty lines and comments
@@ -77,15 +77,15 @@ local function load_window_manager_config(wm_name)
         end
       end
     end
-    
-    logger.plugin("info", "Loaded window manager rules from config", { 
-      file = config_file, 
-      rule_count = #rules 
+
+    logger.plugin("info", "Loaded window manager rules from config", {
+      file = config_file,
+      rule_count = #rules
     })
   else
     logger.plugin("debug", "No config file found", { file = config_file })
   end
-  
+
   return rules
 end
 
@@ -108,7 +108,7 @@ local function configure_hyprland_rules()
 
   local title = state.config.tui.window_title
   local rules = {}
-  
+
   -- Load rules from config file first
   local config_rules = load_window_manager_config("hyprland")
   for _, rule in ipairs(config_rules) do
@@ -116,13 +116,14 @@ local function configure_hyprland_rules()
     local processed_rule = rule:gsub("LSP Context", title)
     table.insert(rules, processed_rule)
   end
-  
+
   -- Add minimal fallback rules if no config file was loaded
   if #config_rules == 0 then
     logger.plugin("info", "No config file rules found, using fallback rules")
     table.insert(rules, string.format('windowrulev2 = float,title:^(%s)$', title))
-    table.insert(rules, string.format('windowrulev2 = move %d %d,title:^(%s)$', config.position.x, config.position.y, title))
-    
+    table.insert(rules,
+      string.format('windowrulev2 = move %d %d,title:^(%s)$', config.position.x, config.position.y, title))
+
     if state.config.tui.window_size then
       table.insert(rules, string.format('windowrulev2 = size %d %d,title:^(%s)$',
         state.config.tui.window_size.width * 8,
@@ -130,7 +131,7 @@ local function configure_hyprland_rules()
         title))
     end
   end
-  
+
   -- Add any additional custom rules from user config
   for _, rule in ipairs(config.hyprland_rules) do
     table.insert(rules, rule)
