@@ -7,16 +7,9 @@ local lsp_service = require('hoverfloat.core.lsp_service')
 local position = require('hoverfloat.core.position')
 local performance = require('hoverfloat.core.performance')
 
--- Communication modules
 local socket_client = require('hoverfloat.communication.socket_client')
-
--- Prefetch modules
 local prefetcher = require('hoverfloat.prefetch.prefetcher')
-
--- Process management
 local tui_manager = require('hoverfloat.process.tui_manager')
-
--- Utils
 local logger = require('hoverfloat.utils.logger')
 
 -- Plugin state
