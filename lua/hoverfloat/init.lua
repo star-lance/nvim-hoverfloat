@@ -4,6 +4,9 @@ local lsp_collector = require('hoverfloat.lsp_collector')
 local socket_client = require('hoverfloat.socket_client')
 local logger = require('hoverfloat.logger')
 
+-- Get the plugin root directory
+local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
+
 local state = {
   config = {},
   display_process = nil,
@@ -11,10 +14,81 @@ local state = {
   binary_path = nil,
   last_sent_hash = nil,
   lsp_collection_in_progress = false,
-  total_lsp_requests = 0,
+}
+
+local default_config = {
+  -- TUI settings
+  tui = {
+    binary_name = "nvim-context-tui",
+    binary_path = nil, -- Auto-detect or user-specified
+    window_title = "LSP Context",
+    window_size = { width = 80, height = 80 },
+    terminal_cmd = "kitty", -- terminal emulator to spawn TUI in
+
+    window_manager = {
+      auto_configure = true,           -- Automatically configure window rules
+      position = { x = 100, y = 100 }, -- Fixed position for floating window (fallback only)
+      pin = true,                      -- Pin window to all workspaces (fallback only)
+      no_focus = true,                 -- Don't steal focus when opening (fallback only)
+      hyprland_rules = {},             -- Additional custom rules (appended to config file rules)
+    },
+  },
+
+  communication = {
+    socket_path = "/tmp/nvim_context.sock",
+    debug = false, -- Enable debug logging
+    log_dir = nil, -- Custom log directory (default: stdpath('cache')/hoverfloat)
+  },
+
+  features = {
+    show_hover = true,
+    show_references = true,
+    show_definition = true,
+    show_type_info = true,
+  },
+
+  -- Cursor tracking settings
+  tracking = {
+    excluded_filetypes = { "help", "qf", "netrw", "fugitive", "TelescopePrompt" },
+  },
+
+  -- Auto-start settings
+  auto_start = true,
+  auto_restart_on_error = true,
 }
 
 -- Window manager configuration functions
+local function load_window_manager_config(wm_name)
+  local config_file = plugin_root .. "/config/" .. wm_name .. "_rules.conf"
+  local rules = {}
+  
+  if vim.fn.filereadable(config_file) == 1 then
+    logger.plugin("debug", "Loading window manager config", { file = config_file })
+    local lines = vim.fn.readfile(config_file)
+    
+    for _, line in ipairs(lines) do
+      local trimmed = vim.trim(line)
+      -- Skip empty lines and comments
+      if trimmed ~= "" and not trimmed:match("^#") then
+        -- Only include windowrulev2 lines for now
+        if trimmed:match("^windowrulev2") then
+          table.insert(rules, trimmed)
+          logger.plugin("debug", "Loaded rule from config", { rule = trimmed })
+        end
+      end
+    end
+    
+    logger.plugin("info", "Loaded window manager rules from config", { 
+      file = config_file, 
+      rule_count = #rules 
+    })
+  else
+    logger.plugin("debug", "No config file found", { file = config_file })
+  end
+  
+  return rules
+end
+
 local function detect_window_manager()
   if os.getenv("HYPRLAND_INSTANCE_SIGNATURE") then
     return "hyprland"
@@ -34,32 +108,30 @@ local function configure_hyprland_rules()
 
   local title = state.config.tui.window_title
   local rules = {}
-
-  if config.floating then
-    table.insert(rules, string.format('windowrule = float,title:^(%s)$', title))
+  
+  -- Load rules from config file first
+  local config_rules = load_window_manager_config("hyprland")
+  for _, rule in ipairs(config_rules) do
+    -- Replace placeholder title with actual window title
+    local processed_rule = rule:gsub("LSP Context", title)
+    table.insert(rules, processed_rule)
   end
-
-  if config.no_focus then
-    table.insert(rules, string.format('windowrule = nofocus,title:^(%s)$', title))
+  
+  -- Add minimal fallback rules if no config file was loaded
+  if #config_rules == 0 then
+    logger.plugin("info", "No config file rules found, using fallback rules")
+    table.insert(rules, string.format('windowrulev2 = float,title:^(%s)$', title))
+    table.insert(rules, string.format('windowrulev2 = move %d %d,title:^(%s)$', config.position.x, config.position.y, title))
+    
+    if state.config.tui.window_size then
+      table.insert(rules, string.format('windowrulev2 = size %d %d,title:^(%s)$',
+        state.config.tui.window_size.width * 8,
+        state.config.tui.window_size.height * 16,
+        title))
+    end
   end
-
-  if config.pin then
-    table.insert(rules, string.format('windowrule = pin,title:^(%s)$', title))
-  end
-
-  if config.position then
-    table.insert(rules, string.format('windowrule = move %d %d,title:^(%s)$',
-      config.position.x, config.position.y, title))
-  end
-
-  if state.config.tui.window_size then
-    table.insert(rules, string.format('windowrule = size %d %d,title:^(%s)$',
-      state.config.tui.window_size.width * 8,   -- Convert character width to pixels (approximate)
-      state.config.tui.window_size.height * 16, -- Convert character height to pixels (approximate)
-      title))
-  end
-
-  -- Add custom rules
+  
+  -- Add any additional custom rules from user config
   for _, rule in ipairs(config.hyprland_rules) do
     table.insert(rules, rule)
   end
@@ -82,54 +154,6 @@ local function setup_window_manager()
   end
 end
 
-local default_config = {
-  -- TUI settings
-  tui = {
-    binary_name = "nvim-context-tui",
-    binary_path = nil, -- Auto-detect or user-specified
-    window_title = "LSP Context",
-    window_size = { width = 80, height = 80 },
-    terminal_cmd = "kitty", -- terminal emulator to spawn TUI in
-
-    -- Window manager settings
-    window_manager = {
-      auto_configure = true,           -- Automatically configure window rules
-      position = { x = 100, y = 100 }, -- Fixed position for floating window
-      floating = true,                 -- Make window float instead of tiling
-      pin = true,                      -- Pin window to all workspaces
-      no_focus = true,                 -- Don't steal focus when opening
-      hyprland_rules = {},             -- Additional custom Hyprland rules
-    },
-  },
-
-  -- Communication settings
-  communication = {
-    socket_path = "/tmp/nvim_context.sock",
-    connection_timeout = 5000, -- 5 seconds connection timeout
-    max_queue_size = 100,      -- Maximum queued messages
-    debug = false,             -- Enable debug logging
-    log_dir = nil,             -- Custom log directory (default: stdpath('cache')/hoverfloat)
-  },
-
-  -- LSP feature toggles (simplified - let Neovim handle the LSP details)
-  features = {
-    show_hover = true,
-    show_references = true,
-    show_definition = true,
-    show_type_info = true,
-    max_references = 8, -- Maximum references to display
-  },
-
-  -- Cursor tracking settings
-  tracking = {
-    excluded_filetypes = { "help", "qf", "netrw", "fugitive", "TelescopePrompt" },
-  },
-
-  -- Auto-start settings
-  auto_start = true,
-  auto_restart_on_error = true,
-  auto_connect = true, -- Automatically connect to TUI when available
-}
 
 local function find_tui_binary()
   if state.binary_path then
@@ -210,8 +234,6 @@ local function update_context()
   end
 
   state.lsp_collection_in_progress = true
-  state.total_lsp_requests = state.total_lsp_requests + 1
-
 
   -- Always collect LSP context information
   lsp_collector.gather_context_info(function(context_data)
@@ -600,8 +622,6 @@ M.get_status = function()
     lsp_collection_in_progress = state.lsp_collection_in_progress,
     socket_status = socket_status,
     uptime_ms = vim.uv.now() - state.startup_time,
-    total_lsp_requests = state.total_lsp_requests,
-    total_updates_sent = state.total_updates_sent,
     last_error_time = state.last_error_time,
   }
 end
