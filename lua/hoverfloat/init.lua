@@ -101,13 +101,13 @@ local function detect_window_manager()
 end
 
 local function configure_hyprland_rules()
-  -- Hardcoded essential rules for LSP Context window
+  -- Hardcoded essential rules for LSP Context window (using both title and class)
   local rules = {
-    'windowrulev2 = float,title:^LSP Context\\$',
-    'windowrulev2 = nofocus,title:^LSP Context\\$', 
-    'windowrulev2 = pin,title:^LSP Context\\$',
-    'windowrulev2 = move 100 100,title:^LSP Context\\$',
-    'windowrulev2 = size 640 1280,title:^LSP Context\\$'
+    'windowrulev2 = float,class:^kitty\\$,title:^LSP Context\\$',
+    'windowrulev2 = nofocus,class:^kitty\\$,title:^LSP Context\\$', 
+    'windowrulev2 = pin,class:^kitty\\$,title:^LSP Context\\$',
+    'windowrulev2 = move 100 100,class:^kitty\\$,title:^LSP Context\\$',
+    'windowrulev2 = size 640 1280,class:^kitty\\$,title:^LSP Context\\$'
   }
 
   -- Apply rules
