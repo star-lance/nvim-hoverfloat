@@ -12,7 +12,6 @@ local state = {
   binary_path = nil,
   last_sent_hash = nil,
   lsp_collection_in_progress = false,
-  connection_status_timer = nil,
   total_lsp_requests = 0,
 }
 
@@ -121,17 +120,12 @@ local default_config = {
     },
   },
 
-  -- Communication settings (updated for persistent connections)
+  -- Communication settings
   communication = {
     socket_path = "/tmp/nvim_context.sock",
-    reconnect_delay = 2000,       -- 2 seconds initial reconnection delay
-    max_reconnect_delay = 30000,  -- 30 seconds max reconnection delay
-    heartbeat_interval = 10000,   -- 10 seconds heartbeat interval
     connection_timeout = 5000,    -- 5 seconds connection timeout
-    heartbeat_timeout = 30000,    -- 30 seconds before considering connection dead
     max_queue_size = 100,         -- Maximum queued messages
-    max_connection_attempts = 10, -- Max connection attempts before giving up
-    update_delay = 50,            -- Debounce delay for cursor updates (ms)
+    update_delay = 0,             -- Debounce delay for cursor updates (ms)
     debug = false,                -- Enable debug logging
     log_dir = nil,                -- Custom log directory (default: stdpath('cache')/hoverfloat)
   },
@@ -271,18 +265,6 @@ local function debounced_update()
   end)
 end
 
--- Connection status monitoring
-local function monitor_connection_status()
-  if state.connection_status_timer then
-    vim.fn.timer_stop(state.connection_status_timer)
-  end
-
-  state.connection_status_timer = vim.fn.timer_start(5000, function()
-    if not socket_client.is_connected() and state.display_process and state.config.auto_connect then
-      socket_client.ensure_connected()
-    end
-  end, { ['repeat'] = -1 })
-end
 
 -- Start the display process
 local function start_display_process()
@@ -330,11 +312,6 @@ local function start_display_process()
         -- Disconnect socket when TUI exits
         socket_client.disconnect()
 
-        -- Stop connection monitoring
-        if state.connection_status_timer then
-          vim.fn.timer_stop(state.connection_status_timer)
-          state.connection_status_timer = nil
-        end
 
         if exit_code ~= 0 and state.config.auto_restart_on_error then
           vim.defer_fn(start_display_process, 2000)
@@ -373,8 +350,6 @@ local function start_display_process()
         socket_client.connect(state.config.communication.socket_path)
       end
 
-      -- Start connection monitoring
-      monitor_connection_status()
 
       -- Send initial update after connection is established
       vim.defer_fn(function()
@@ -402,11 +377,6 @@ local function stop_display_process()
   -- Disconnect socket first
   socket_client.disconnect()
 
-  -- Stop connection monitoring
-  if state.connection_status_timer then
-    vim.fn.timer_stop(state.connection_status_timer)
-    state.connection_status_timer = nil
-  end
 
   if state.display_process then
     vim.fn.jobstop(state.display_process)
