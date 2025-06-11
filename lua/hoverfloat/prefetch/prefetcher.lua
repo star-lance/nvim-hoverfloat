@@ -13,16 +13,16 @@ local state = {
   prefetch_queue = {},
   prefetch_in_progress = {},
   config = {
-    max_concurrent_requests = 2,
-    prefetch_radius_lines = 30,
+    max_concurrent_requests = 2,    -- Hardcoded default
+    prefetch_radius_lines = 30,     -- Hardcoded default
   }
 }
 
--- Update prefetcher configuration
+-- Update prefetcher configuration (simplified - no more get_section)
 local function update_config()
-  local prefetch_config = config.get_section('prefetching')
-  state.config.max_concurrent_requests = prefetch_config.max_concurrent_requests or 2
-  state.config.prefetch_radius_lines = prefetch_config.prefetch_radius_lines or 30
+  -- Use hardcoded values since config sections were removed
+  state.config.max_concurrent_requests = 2
+  state.config.prefetch_radius_lines = 30
 end
 
 -- Get symbols in the prefetch range for a buffer
@@ -81,8 +81,14 @@ local function prefetch_symbol_data(bufnr, symbol, callback)
   mark_prefetch_in_progress(bufnr, symbol, true)
   performance.record_lsp_request()
 
-  -- Use consolidated LSP service for all data
-  local feature_config = config.get_section('features')
+  -- Use hardcoded feature config since config sections were removed
+  local feature_config = {
+    show_hover = true,
+    show_references = true,
+    show_definition = true,
+    show_type_info = true,
+    max_references = 8,
+  }
 
   lsp_service.gather_all_context(bufnr, symbol.start_line, symbol.start_col, feature_config, function(lsp_data)
     -- Store in cache

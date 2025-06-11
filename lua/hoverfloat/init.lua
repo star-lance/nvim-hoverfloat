@@ -174,18 +174,26 @@ function M.setup(opts)
   -- Setup configuration first
   local current_config = config.setup(opts or {})
 
-  -- Setup logging
+  -- Setup logging with hardcoded defaults (no more communication.debug)
   logger.setup({
-    debug = current_config.communication.debug,
-    log_dir = current_config.communication.log_dir
+    debug = false, -- Hardcoded default
+    log_dir = nil  -- Use default
   })
 
   -- Setup all modules
   lsp_service.setup()
-  socket_client.setup(current_config.communication)
+  
+  -- Setup socket client with simplified config
+  socket_client.setup({
+    socket_path = current_config.socket_path,
+    connection_timeout = 5000,    -- Hardcoded default
+    max_queue_size = 100,         -- Hardcoded default
+    max_messages_per_second = 10, -- Hardcoded default
+  })
+  
   tui_manager.setup()
-
   prefetcher.setup()
+  
   -- Setup UI components
   setup_autocmds()
   setup_commands()

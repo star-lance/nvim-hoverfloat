@@ -249,7 +249,13 @@ end
 -- Aggregate context gathering (replaces gather_context_info)
 function M.gather_all_context(bufnr, line, col, feature_config, callback)
   bufnr = bufnr or 0
-  feature_config = feature_config or {}
+  feature_config = feature_config or {
+    show_hover = true,
+    show_references = true,
+    show_definition = true,
+    show_type_info = true,
+    max_references = 8,
+  }
   
   if not position.is_suitable_for_lsp(bufnr) then
     callback(nil)
