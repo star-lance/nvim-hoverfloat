@@ -4,6 +4,89 @@ local lsp_collector = require('hoverfloat.lsp_collector')
 local socket_client = require('hoverfloat.socket_client')
 local logger = require('hoverfloat.logger')
 
+-- Window manager configuration functions
+local function detect_window_manager()
+  if os.getenv("HYPRLAND_INSTANCE_SIGNATURE") then
+    return "hyprland"
+  elseif os.getenv("I3SOCK") or os.getenv("SWAYSOCK") then
+    return "sway"
+  elseif os.getenv("QTILE_XEPHYR") then
+    return "qtile"
+  end
+  return nil
+end
+
+local function configure_hyprland_rules()
+  local config = state.config.tui.window_manager
+  if not config.auto_configure then
+    return
+  end
+  
+  local title = state.config.tui.window_title
+  local rules = {}
+  
+  if config.floating then
+    table.insert(rules, string.format('windowrule = float,title:^(%s)$', title))
+  end
+  
+  if config.no_focus then
+    table.insert(rules, string.format('windowrule = nofocus,title:^(%s)$', title))
+  end
+  
+  if config.pin then
+    table.insert(rules, string.format('windowrule = pin,title:^(%s)$', title))
+  end
+  
+  if config.position then
+    table.insert(rules, string.format('windowrule = move %d %d,title:^(%s)$', 
+      config.position.x, config.position.y, title))
+  end
+  
+  if state.config.tui.window_size then
+    table.insert(rules, string.format('windowrule = size %d %d,title:^(%s)$',
+      state.config.tui.window_size.width * 8, -- Convert character width to pixels (approximate)
+      state.config.tui.window_size.height * 16, -- Convert character height to pixels (approximate)
+      title))
+  end
+  
+  -- Add custom rules
+  for _, rule in ipairs(config.hyprland_rules) do
+    table.insert(rules, rule)
+  end
+  
+  -- Apply rules via hyprctl
+  for _, rule in ipairs(rules) do
+    vim.fn.system(string.format('hyprctl keyword "%s"', rule))
+    logger.plugin("debug", "Applied Hyprland rule", { rule = rule })
+  end
+end
+
+local function setup_window_manager()
+  local wm = detect_window_manager()
+  logger.plugin("info", "Detected window manager", { wm = wm or "unknown" })
+  
+  if wm == "hyprland" then
+    configure_hyprland_rules()
+  elseif wm then
+    logger.plugin("warn", "Window manager detected but auto-configuration not implemented", { wm = wm })
+  end
+end
+
+local function cleanup_hyprland_rules()
+  local title = state.config.tui.window_title
+  local rules_to_remove = {
+    string.format('windowrule = float,title:^(%s)$', title),
+    string.format('windowrule = nofocus,title:^(%s)$', title),
+    string.format('windowrule = pin,title:^(%s)$', title),
+    string.format('windowrule = move %d %d,title:^(%s)$', 
+      state.config.tui.window_manager.position.x, state.config.tui.window_manager.position.y, title),
+  }
+  
+  -- Note: Hyprland doesn't have a direct way to remove specific window rules
+  -- Users may need to restart Hyprland or manually clean up rules if needed
+  logger.plugin("info", "Window rules remain active until Hyprland restart", { title = title })
+end
+
 local state = {
   config = {},
   update_timer = nil,
@@ -25,6 +108,16 @@ local default_config = {
     window_title = "LSP Context",
     window_size = { width = 80, height = 80 },
     terminal_cmd = "kitty", -- terminal emulator to spawn TUI in
+    
+    -- Window manager settings
+    window_manager = {
+      auto_configure = true, -- Automatically configure window rules
+      position = { x = 100, y = 100 }, -- Fixed position for floating window
+      floating = true, -- Make window float instead of tiling
+      pin = true, -- Pin window to all workspaces
+      no_focus = true, -- Don't steal focus when opening
+      hyprland_rules = {}, -- Additional custom Hyprland rules
+    },
   },
 
   -- Communication settings (updated for persistent connections)
@@ -204,6 +297,9 @@ local function start_display_process()
     logger.plugin("error", "Cannot start: TUI binary not found. Run 'make install' to build the binary.")
     return false
   end
+
+  -- Setup window manager rules before spawning TUI
+  setup_window_manager()
 
   -- Build terminal command
   local terminal_args = {
@@ -599,6 +695,20 @@ end
 M.reset_connection = function()
   logger.plugin("info", "Resetting connection")
   socket_client.reset()
+end
+
+-- Window manager configuration functions
+M.configure_window_manager = function()
+  setup_window_manager()
+end
+
+M.get_window_manager_info = function()
+  local wm = detect_window_manager()
+  return {
+    detected = wm,
+    auto_configure = state.config.tui.window_manager.auto_configure,
+    config = state.config.tui.window_manager,
+  }
 end
 
 M.enable_debug = function()

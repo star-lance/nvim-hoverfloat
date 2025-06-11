@@ -26,7 +26,9 @@ local function get_hover_info(callback)
   end
 
   logger.lsp("debug", "Requesting hover")
-  vim.lsp.buf_request(0, 'textDocument/hover', vim.lsp.util.make_position_params(), function(err, result)
+  local clients = vim.lsp.get_clients()
+  local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
+  vim.lsp.buf_request(0, 'textDocument/hover', params, function(err, result)
     if err or not result or not result.contents then
       callback(nil)
       return
@@ -47,7 +49,9 @@ local function get_definition_info(callback)
   end
 
   logger.lsp("debug", "Requesting definition")
-  vim.lsp.buf_request(0, 'textDocument/definition', vim.lsp.util.make_position_params(), function(err, result)
+  local clients = vim.lsp.get_clients()
+  local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
+  vim.lsp.buf_request(0, 'textDocument/definition', params, function(err, result)
     if err or not result then
       callback(nil)
       return
@@ -73,7 +77,8 @@ local function get_references_info(callback, max_refs)
   end
 
   logger.lsp("debug", "Requesting references")
-  local params = vim.lsp.util.make_position_params()
+  local clients = vim.lsp.get_clients()
+  local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
   params.context = { includeDeclaration = true }
   vim.lsp.buf_request(0, 'textDocument/references', params, function(err, result)
     if err or not result then
@@ -106,7 +111,9 @@ local function get_type_definition_info(callback)
   end
 
   logger.lsp("debug", "Requesting type definition")
-  vim.lsp.buf_request(0, 'textDocument/typeDefinition', vim.lsp.util.make_position_params(), function(err, result)
+  local clients = vim.lsp.get_clients()
+  local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
+  vim.lsp.buf_request(0, 'textDocument/typeDefinition', params, function(err, result)
     if err or not result then
       callback(nil)
       return
