@@ -119,7 +119,7 @@ local function get_type_definition_info(callback)
       return
     end
 
-    local locations = vim.tbl_islist(result) and result or { result }
+    local locations = vim.islist(result) and result or { result }
     local items = vim.lsp.util.locations_to_items(locations, 'utf-16')
     if items and #items > 0 then
       local item = items[1]
@@ -161,10 +161,26 @@ function M.gather_context_info(completion_callback, config)
   end
 
   local requests = {
-    { enabled = config.show_hover,      func = get_hover_info,                                                       type = "hover" },
-    { enabled = config.show_definition, func = get_definition_info,                                                  type = "definition" },
-    { enabled = config.show_references, func = function(cb) get_references_info(cb, config.max_references or 8) end, type = "references" },
-    { enabled = config.show_type_info,  func = get_type_definition_info,                                             type = "type_definition" }
+    {
+      enabled = config.show_hover,
+      func = get_hover_info,
+      type = "hover"
+    },
+    {
+      enabled = config.show_definition,
+      func = get_definition_info,
+      type = "definition"
+    },
+    {
+      enabled = config.show_references,
+      func = function(cb) get_references_info(cb, config.max_references or 8) end,
+      type = "references"
+    },
+    {
+      enabled = config.show_type_info,
+      func = get_type_definition_info,
+      type = "type_definition"
+    }
   }
 
   for _, req in ipairs(requests) do

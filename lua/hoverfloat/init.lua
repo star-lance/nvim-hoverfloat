@@ -4,9 +4,6 @@ local lsp_collector = require('hoverfloat.lsp_collector')
 local socket_client = require('hoverfloat.socket_client')
 local logger = require('hoverfloat.logger')
 
--- Get the plugin root directory
-local plugin_root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
-
 local state = {
   config = {},
   display_process = nil,
@@ -21,17 +18,9 @@ local default_config = {
   tui = {
     binary_name = "nvim-context-tui",
     binary_path = nil, -- Auto-detect or user-specified
-    window_title = "LSP Context",
+    window_title = "nvim-hoverfloat-tui",
     window_size = { width = 80, height = 80 },
     terminal_cmd = "kitty", -- terminal emulator to spawn TUI in
-
-    window_manager = {
-      auto_configure = true,           -- Automatically configure window rules
-      position = { x = 100, y = 100 }, -- Fixed position for floating window (fallback only)
-      pin = true,                      -- Pin window to all workspaces (fallback only)
-      no_focus = true,                 -- Don't steal focus when opening (fallback only)
-      hyprland_rules = {},             -- Additional custom rules (appended to config file rules)
-    },
   },
 
   communication = {
@@ -56,87 +45,6 @@ local default_config = {
   auto_start = true,
   auto_restart_on_error = true,
 }
-
--- Window manager configuration functions
-local function load_window_manager_config(wm_name)
-  local config_file = plugin_root .. "/config/" .. wm_name .. "_rules.conf"
-  local rules = {}
-
-  if vim.fn.filereadable(config_file) == 1 then
-    logger.plugin("debug", "Loading window manager config", { file = config_file })
-    local lines = vim.fn.readfile(config_file)
-
-    for _, line in ipairs(lines) do
-      local trimmed = vim.trim(line)
-      -- Skip empty lines and comments
-      if trimmed ~= "" and not trimmed:match("^#") then
-        -- Only include windowrulev2 lines for now
-        if trimmed:match("^windowrulev2") then
-          table.insert(rules, trimmed)
-          logger.plugin("debug", "Loaded rule from config", { rule = trimmed })
-        end
-      end
-    end
-
-    logger.plugin("info", "Loaded window manager rules from config", {
-      file = config_file,
-      rule_count = #rules
-    })
-  else
-    logger.plugin("debug", "No config file found", { file = config_file })
-  end
-
-  return rules
-end
-
-local function detect_window_manager()
-  if os.getenv("HYPRLAND_INSTANCE_SIGNATURE") then
-    return "hyprland"
-  elseif os.getenv("I3SOCK") or os.getenv("SWAYSOCK") then
-    return "sway"
-  elseif os.getenv("QTILE_XEPHYR") then
-    return "qtile"
-  end
-  return nil
-end
-
-local function configure_hyprland_rules()
-  -- Hardcoded essential rules for LSP Context window (using both title and class)
-  local rules = {
-    'windowrulev2 = float,class:^kitty\\$,title:^LSP Context\\$',
-    'windowrulev2 = nofocus,class:^kitty\\$,title:^LSP Context\\$', 
-    'windowrulev2 = pin,class:^kitty\\$,title:^LSP Context\\$',
-    'windowrulev2 = move 100 100,class:^kitty\\$,title:^LSP Context\\$',
-    'windowrulev2 = size 640 1280,class:^kitty\\$,title:^LSP Context\\$'
-  }
-
-  -- Apply rules
-  for _, rule in ipairs(rules) do
-    local result = vim.fn.system('hyprctl keyword "' .. rule .. '"')
-    if vim.v.shell_error == 0 then
-      logger.plugin("debug", "Applied rule", { rule = rule })
-    else
-      logger.plugin("error", "Failed to apply rule", { rule = rule, output = result })
-      return false
-    end
-  end
-  
-  return true
-end
-
-local function setup_window_manager()
-  local wm = detect_window_manager()
-  logger.plugin("info", "Detected window manager", { wm = wm or "unknown" })
-
-  if wm == "hyprland" then
-    return configure_hyprland_rules()
-  elseif wm then
-    logger.plugin("warn", "Window manager detected but auto-configuration not implemented", { wm = wm })
-    return false
-  end
-  return false
-end
-
 
 local function find_tui_binary()
   if state.binary_path then
@@ -186,7 +94,6 @@ end
 -- Generate content hash for LSP context data (excluding timestamp)
 local function hash_context_data(context_data)
   if not context_data then return nil end
-
   -- stable representation excluding volatile fields
   local stable_data = {
     file = context_data.file,
@@ -251,12 +158,6 @@ local function start_display_process()
   if not binary_path then
     logger.plugin("error", "Cannot start: TUI binary not found. Run 'make install' to build the binary.")
     return false
-  end
-
-  -- Setup window manager rules before spawning TUI
-  local rules_applied = setup_window_manager()
-  if not rules_applied then
-    logger.plugin("warn", "Window manager rules may not be applied correctly")
   end
 
   -- Build terminal command
@@ -637,20 +538,6 @@ end
 M.reset_connection = function()
   logger.plugin("info", "Resetting connection")
   socket_client.reset()
-end
-
--- Window manager configuration functions
-M.configure_window_manager = function()
-  setup_window_manager()
-end
-
-M.get_window_manager_info = function()
-  local wm = detect_window_manager()
-  return {
-    detected = wm,
-    auto_configure = state.config.tui.window_manager.auto_configure,
-    config = state.config.tui.window_manager,
-  }
 end
 
 M.enable_debug = function()
