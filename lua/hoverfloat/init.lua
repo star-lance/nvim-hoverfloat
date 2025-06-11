@@ -7,7 +7,7 @@ local lsp_service = require('hoverfloat.core.lsp_service')
 local position = require('hoverfloat.core.position')
 local performance = require('hoverfloat.core.performance')
 
--- Communication modules  
+-- Communication modules
 local socket_client = require('hoverfloat.communication.socket_client')
 
 -- Prefetch modules
@@ -18,9 +18,6 @@ local tui_manager = require('hoverfloat.process.tui_manager')
 
 -- Utils
 local logger = require('hoverfloat.utils.logger')
-
--- Legacy modules (kept for compatibility)
-local lsp_collector = require('hoverfloat.lsp_collector')
 
 -- Plugin state
 local state = {
@@ -59,25 +56,12 @@ local function update_context()
       local response_time = performance.complete_request(start_time, true, false)
       state.last_sent_position = current_position
       socket_client.send_context_update(instant_data)
-      
+
       if response_time < 2000 then -- Less than 2ms
         logger.debug("Performance", string.format("Instant response: %.2fμs", response_time))
       end
       return
     end
-
-    -- Not in cache - fall back to normal LSP collection
-    local feature_config = config.get_section('features')
-    
-    lsp_collector.gather_context_info(function(context_data)
-      local had_error = context_data == nil
-      performance.complete_request(start_time, false, had_error)
-      
-      if context_data then
-        state.last_sent_position = current_position
-        socket_client.send_context_update(context_data)
-      end
-    end, feature_config)
   end)
 end
 
@@ -189,32 +173,32 @@ end
 function M.setup(opts)
   -- Setup configuration first
   local current_config = config.setup(opts or {})
-  
+
   -- Setup logging
   logger.setup({
     debug = current_config.communication.debug,
     log_dir = current_config.communication.log_dir
   })
-  
+
   -- Setup all modules
   lsp_service.setup()
   socket_client.setup(current_config.communication)
   tui_manager.setup()
-  
+
   -- Setup prefetching if enabled
   if current_config.prefetching.enabled then
     prefetcher.setup()
     logger.info("Plugin", "Symbol prefetching enabled")
   end
-  
+
   -- Setup UI components
   setup_autocmds()
   setup_commands()
   setup_keymaps()
-  
+
   -- Start performance monitoring
   performance.start_monitoring()
-  
+
   logger.info("Plugin", "HoverFloat initialized successfully")
 end
 
@@ -238,7 +222,7 @@ function M.get_status()
   local tui_status = tui_manager.get_status()
   local prefetch_stats = prefetcher.get_stats()
   local perf_stats = performance.get_stats()
-  
+
   return {
     enabled = state.enabled,
     tui_running = tui_status.running,
