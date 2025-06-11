@@ -1,5 +1,6 @@
 local M = {}
 local uv = vim.uv or vim.loop
+local logger = require('hoverfloat.logger')
 
 -- Connection state
 local state = {
@@ -10,43 +11,6 @@ local state = {
   message_queue = {},
   incoming_buffer = "",
 }
-
--- Connection manager - centralized retry logic
-local connection_manager = {
-  can_retry = true,
-  
-  handle_failure = function(reason)
-    cleanup_connection()
-    if connection_manager.can_retry then
-      connection_manager.can_retry = false
-      create_connection()
-    end
-  end,
-  
-  reset = function()
-    connection_manager.can_retry = true
-  end
-}
-
--- Configuration
-local config = {
-  connection_timeout = 5000,    -- 5 seconds
-  max_queue_size = 100,         -- Maximum queued messages
-}
-
--- Message creation helper
-local function create_message(msg_type, data)
-  local message = {
-    type = msg_type,
-    timestamp = vim.uv.now(),
-    data = data or {}
-  }
-  return vim.json.encode(message) .. '\n'
-end
-
-
-local logger = require('hoverfloat.logger')
-
 
 -- Clean up connection resources
 local function cleanup_connection()
@@ -60,6 +24,39 @@ local function cleanup_connection()
   state.connected = false
   state.connecting = false
   state.incoming_buffer = ""
+end
+
+-- Connection manager - centralized retry logic
+local connection_manager = {
+  can_retry = true,
+}
+
+function connection_manager.handle_failure(reason)
+  cleanup_connection()
+  if connection_manager.can_retry then
+    connection_manager.can_retry = false
+    create_connection()
+  end
+end
+
+function connection_manager.reset()
+  connection_manager.can_retry = true
+end
+
+-- Configuration
+local config = {
+  connection_timeout = 5000, -- 5 seconds
+  max_queue_size = 100,      -- Maximum queued messages
+}
+
+-- Message creation helper
+local function create_message(msg_type, data)
+  local message = {
+    type = msg_type,
+    timestamp = vim.uv.now(),
+    data = data or {}
+  }
+  return vim.json.encode(message) .. '\n'
 end
 
 local function handle_connection_failure(reason)
@@ -77,7 +74,7 @@ end
 -- Handle incoming data from socket
 local function handle_incoming_data(data)
   if not data then return end
-  
+
   -- Append to buffer
   state.incoming_buffer = state.incoming_buffer .. data
 
@@ -196,7 +193,7 @@ end
 
 function M.setup(user_config)
   config = vim.tbl_deep_extend("force", config, user_config or {})
-  
+
   if user_config and user_config.socket_path then
     state.socket_path = user_config.socket_path
   end
@@ -241,7 +238,7 @@ function M.send_ping()
   if not state.connected then
     return false
   end
-  
+
   local ping_msg = create_message("ping", { timestamp = vim.uv.now() })
   return send_raw_message(ping_msg)
 end
@@ -347,6 +344,5 @@ function M.ensure_connected()
     create_connection()
   end
 end
-
 
 return M
