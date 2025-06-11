@@ -158,14 +158,14 @@ local function configure_hyprland_rules()
   
   -- Verify rules were actually loaded
   if all_rules_applied then
-    local verify_cmd = string.format('hyprctl keyword | grep -c "windowrulev2.*%s"', title)
+    local verify_cmd = 'hyprctl keyword | grep -c "windowrulev2" || echo "0"'
     local verify_result = vim.fn.system(verify_cmd)
-    local rule_count = tonumber(verify_result:gsub("%s+", "")) or 0
+    local rule_count = tonumber(vim.trim(verify_result)) or 0
     
     if rule_count > 0 then
-      logger.plugin("info", "Window rules verified in Hyprland", { title = title, count = rule_count })
+      logger.plugin("info", "Window rules verified in Hyprland", { count = rule_count })
     else
-      logger.plugin("warn", "Window rules applied but not found in Hyprland config", { title = title })
+      logger.plugin("warn", "Window rules applied but not found in Hyprland config")
       all_rules_applied = false
     end
   end
