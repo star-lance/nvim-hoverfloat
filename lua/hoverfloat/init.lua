@@ -2,6 +2,7 @@ local M = {}
 
 local lsp_collector = require('hoverfloat.lsp_collector')
 local socket_client = require('hoverfloat.socket_client')
+local symbol_prefetcher = require('hoverfloat.symbol_prefetcher')
 local logger = require('hoverfloat.logger')
 
 local state = {
@@ -9,6 +10,9 @@ local state = {
   display_process = nil,
   plugin_enabled = true,
   lsp_collection_in_progress = false,
+  cache_hits = 0,
+  total_requests = 0,
+  last_sent_position = nil,
 }
 
 local default_config = {
@@ -31,7 +35,12 @@ local default_config = {
     show_definition = true,
     show_type_info = true,
   },
-
+  prefetching = {
+    enabled = true,
+    prefetch_radius_lines = 30,
+    max_concurrent_requests = 2,
+    cache_ttl_ms = 45000,
+  },
   -- Auto-start settings
   auto_start = true,
   auto_restart_on_error = true,
@@ -40,60 +49,70 @@ local default_config = {
 local function has_lsp_clients()
   return #vim.lsp.get_clients({ bufnr = 0 }) > 0
 end
-
-
--- Generate content hash for LSP context data (excluding timestamp)
-local function hash_context_data(context_data)
-  if not context_data then return nil end
-  -- stable representation excluding volatile fields
-  local stable_data = {
-    file = context_data.file,
-    hover = context_data.hover,
-    definition = context_data.definition,
-    references_count = context_data.references_count,
-    references = context_data.references,
-    references_more = context_data.references_more,
-    type_definition = context_data.type_definition,
-  }
-
-  return vim.fn.sha256(vim.json.encode(stable_data))
-end
-
 local function should_update_context()
   return state.plugin_enabled and has_lsp_clients()
 end
 
--- Content-based context update - only prevents sending exact duplicates
+-- Get current position identifier
+local function get_position_identifier()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor_pos = vim.api.nvim_win_get_cursor(0)
+  local word = vim.fn.expand('<cword>')
+  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.")
+
+  return string.format("%s:%d:%d:%s", file, cursor_pos[1], cursor_pos[2], word or "")
+end
+
+-- Ultra-fast context update with prefetching
 local function update_context()
   if not should_update_context() then
     return
   end
 
-  -- Prevent overlapping LSP collection calls that can cause race conditions
   if state.lsp_collection_in_progress then
     return
   end
 
-  state.lsp_collection_in_progress = true
+  -- Check if we're at the same position
+  local current_position = get_position_identifier()
+  if current_position == state.last_sent_position then
+    return
+  end
 
-  -- Always collect LSP context information
-  lsp_collector.gather_context_info(function(context_data)
-    state.lsp_collection_in_progress = false
-    if not context_data then
+  local start_time = vim.uv.now()
+  state.total_requests = state.total_requests + 1
+
+  -- Try instant lookup from prefetcher first
+  symbol_prefetcher.get_instant_context_data(function(instant_data)
+    if instant_data then
+      -- INSTANT RESPONSE! Sub-millisecond
+      state.cache_hits = state.cache_hits + 1
+      local response_time = vim.uv.now() - start_time
+
+      state.last_sent_position = current_position
+      socket_client.send_context_update(instant_data)
+
+      if response_time < 2000 then -- Less than 2ms
+        logger.debug("Performance", string.format("Instant response: %.2fμs", response_time))
+      end
+
       return
     end
 
-    -- Generate hash of the new context data
-    local new_hash = hash_context_data(context_data)
+    -- Not in cache - fall back to normal LSP collection
+    state.lsp_collection_in_progress = true
 
-    -- Only skip if this is EXACTLY the same as the last message we sent
-    if new_hash ~= state.last_sent_hash then
-      state.last_sent_hash = new_hash
+    lsp_collector.gather_context_info(function(context_data)
+      state.lsp_collection_in_progress = false
+      if not context_data then
+        return
+      end
+
+      state.last_sent_position = current_position
       socket_client.send_context_update(context_data)
-    end
-  end, state.config.features)
+    end, state.config.features)
+  end)
 end
-
 -- Start the display process
 local function start_display_process()
   if state.display_process then
@@ -128,7 +147,7 @@ local function start_display_process()
 
   if handle > 0 then
     state.display_process = handle
-    
+
     -- Wait for socket file to be created by TUI, then connect
     local socket_path = state.config.communication.socket_path
     local function try_connect()
@@ -141,7 +160,7 @@ local function start_display_process()
     end
     -- Give TUI a moment to start, then begin checking for socket
     vim.defer_fn(try_connect, 200)
-    
+
     return true
   else
     return false
@@ -280,17 +299,22 @@ end
 -- Main setup function
 function M.setup(opts)
   state.config = vim.tbl_deep_extend("force", default_config, opts or {})
-  
+
   logger.setup({
     debug = state.config.communication.debug,
     log_dir = state.config.communication.log_dir
   })
-  
+
+  if state.config.prefetching.enabled then
+    symbol_prefetcher.setup_prefetching()
+    logger.info("Prefetcher", "Symbol prefetching enabled")
+  end
+
   socket_client.setup(state.config.communication)
   setup_autocmds()
   setup_commands()
   setup_keymaps()
-  
+
   if state.config.auto_start then
     vim.defer_fn(function()
       start_display_process()
