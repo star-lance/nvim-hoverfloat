@@ -83,23 +83,6 @@ local function setup_window_manager()
   end
 end
 
-local function cleanup_hyprland_rules()
-  local title = state.config.tui.window_title
-  local rules_to_remove = {
-    string.format('windowrule = float,title:^(%s)$', title),
-    string.format('windowrule = nofocus,title:^(%s)$', title),
-    string.format('windowrule = pin,title:^(%s)$', title),
-    string.format('windowrule = move %d %d,title:^(%s)$',
-      state.config.tui.window_manager.position.x, state.config.tui.window_manager.position.y, title),
-  }
-
-  -- Note: Hyprland doesn't have a direct way to remove specific window rules
-  -- Users may need to restart Hyprland or manually clean up rules if needed
-  logger.plugin("info", "Window rules remain active until Hyprland restart", { title = title })
-end
-
-
-
 local default_config = {
   -- TUI settings
   tui = {
@@ -123,11 +106,11 @@ local default_config = {
   -- Communication settings
   communication = {
     socket_path = "/tmp/nvim_context.sock",
-    connection_timeout = 5000,    -- 5 seconds connection timeout
-    max_queue_size = 100,         -- Maximum queued messages
-    update_delay = 0,             -- Debounce delay for cursor updates (ms)
-    debug = false,                -- Enable debug logging
-    log_dir = nil,                -- Custom log directory (default: stdpath('cache')/hoverfloat)
+    connection_timeout = 5000, -- 5 seconds connection timeout
+    max_queue_size = 100,      -- Maximum queued messages
+    update_delay = 0,          -- Debounce delay for cursor updates (ms)
+    debug = false,             -- Enable debug logging
+    log_dir = nil,             -- Custom log directory (default: stdpath('cache')/hoverfloat)
   },
 
   -- LSP feature toggles (simplified - let Neovim handle the LSP details)
@@ -252,20 +235,6 @@ local function update_context()
   end, state.config.features)
 end
 
--- Debounced update function
-local function debounced_update()
-  if state.update_timer then
-    vim.fn.timer_stop(state.update_timer)
-  end
-
-  local delay = state.config.communication.update_delay or 50
-  state.update_timer = vim.fn.timer_start(delay, function()
-    update_context()
-    state.update_timer = nil
-  end)
-end
-
-
 -- Start the display process
 local function start_display_process()
   if state.display_process then
@@ -354,7 +323,7 @@ local function start_display_process()
       -- Send initial update after connection is established
       vim.defer_fn(function()
         if socket_client.is_connected() then
-          debounced_update()
+          update_context()
         end
       end, 1000)
     end, 1000)
@@ -396,7 +365,7 @@ local function setup_autocmds()
     callback = function()
       if not state.plugin_enabled then return end
       if socket_client.is_connected() then
-        debounced_update()
+        update_context()
       end
     end,
   })
@@ -407,7 +376,7 @@ local function setup_autocmds()
     callback = function()
       if not state.plugin_enabled then return end
       if has_lsp_clients() and socket_client.is_connected() then
-        vim.defer_fn(debounced_update, 100)
+        vim.defer_fn(update_context, 100)
       end
     end,
   })
@@ -418,7 +387,7 @@ local function setup_autocmds()
     callback = function(event)
       if not state.plugin_enabled then return end
       if socket_client.is_connected() then
-        vim.defer_fn(debounced_update, 200)
+        vim.defer_fn(update_context, 200)
       end
     end,
   })
