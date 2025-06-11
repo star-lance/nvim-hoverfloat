@@ -1,75 +1,46 @@
+-- lua/hoverfloat/init.lua - Main plugin entry point (simplified)
 local M = {}
 
-local lsp_collector = require('hoverfloat.lsp_collector')
-local socket_client = require('hoverfloat.socket_client')
-local symbol_prefetcher = require('hoverfloat.symbol_prefetcher')
-local logger = require('hoverfloat.logger')
+-- Core modules
+local config = require('hoverfloat.config')
+local lsp_service = require('hoverfloat.core.lsp_service')
+local position = require('hoverfloat.core.position')
+local performance = require('hoverfloat.core.performance')
 
+-- Communication modules  
+local socket_client = require('hoverfloat.communication.socket_client')
+
+-- Prefetch modules
+local prefetcher = require('hoverfloat.prefetch.prefetcher')
+
+-- Process management
+local tui_manager = require('hoverfloat.process.tui_manager')
+
+-- Utils
+local logger = require('hoverfloat.utils.logger')
+
+-- Legacy modules (kept for compatibility)
+local lsp_collector = require('hoverfloat.lsp_collector')
+
+-- Plugin state
 local state = {
-  config = {},
-  display_process = nil,
-  plugin_enabled = true,
-  lsp_collection_in_progress = false,
-  cache_hits = 0,
-  total_requests = 0,
+  enabled = true,
   last_sent_position = nil,
 }
 
-local default_config = {
-  -- TUI settings
-  tui = {
-    window_title = "nvim-hoverfloat-tui",
-    window_size = { width = 80, height = 80 },
-    terminal_cmd = "kitty", -- terminal emulator to spawn TUI in
-  },
-
-  communication = {
-    socket_path = "/tmp/nvim_context.sock",
-    debug = true,  -- Enable debug logging
-    log_dir = nil, -- Custom log directory (default: stdpath('cache')/hoverfloat)
-  },
-
-  features = {
-    show_hover = true,
-    show_references = true,
-    show_definition = true,
-    show_type_info = true,
-  },
-  prefetching = {
-    enabled = true,
-    prefetch_radius_lines = 30,
-    max_concurrent_requests = 2,
-    cache_ttl_ms = 45000,
-  },
-  -- Auto-start settings
-  auto_start = true,
-  auto_restart_on_error = true,
-}
-
-local function has_lsp_clients()
-  return #vim.lsp.get_clients({ bufnr = 0 }) > 0
-end
+-- Check if context should be updated
 local function should_update_context()
-  return state.plugin_enabled and has_lsp_clients()
+  return state.enabled and position.has_lsp_clients()
 end
 
--- Get current position identifier
+-- Get position identifier for deduplication
 local function get_position_identifier()
-  local bufnr = vim.api.nvim_get_current_buf()
-  local cursor_pos = vim.api.nvim_win_get_cursor(0)
-  local word = vim.fn.expand('<cword>')
-  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.")
-
-  return string.format("%s:%d:%d:%s", file, cursor_pos[1], cursor_pos[2], word or "")
+  return position.get_position_identifier()
 end
 
--- Ultra-fast context update with prefetching
+-- Main context update function
 local function update_context()
   if not should_update_context() then
-    return
-  end
-
-  if state.lsp_collection_in_progress then
     return
   end
 
@@ -79,96 +50,35 @@ local function update_context()
     return
   end
 
-  local start_time = vim.uv.now()
-  state.total_requests = state.total_requests + 1
+  local start_time = performance.start_request()
 
   -- Try instant lookup from prefetcher first
-  symbol_prefetcher.get_instant_context_data(function(instant_data)
+  prefetcher.get_instant_context_data(function(instant_data)
     if instant_data then
-      -- INSTANT RESPONSE! Sub-millisecond
-      state.cache_hits = state.cache_hits + 1
-      local response_time = vim.uv.now() - start_time
-
+      -- INSTANT RESPONSE from cache!
+      local response_time = performance.complete_request(start_time, true, false)
       state.last_sent_position = current_position
       socket_client.send_context_update(instant_data)
-
+      
       if response_time < 2000 then -- Less than 2ms
         logger.debug("Performance", string.format("Instant response: %.2fμs", response_time))
       end
-
       return
     end
 
     -- Not in cache - fall back to normal LSP collection
-    state.lsp_collection_in_progress = true
-
+    local feature_config = config.get_section('features')
+    
     lsp_collector.gather_context_info(function(context_data)
-      state.lsp_collection_in_progress = false
-      if not context_data then
-        return
+      local had_error = context_data == nil
+      performance.complete_request(start_time, false, had_error)
+      
+      if context_data then
+        state.last_sent_position = current_position
+        socket_client.send_context_update(context_data)
       end
-
-      state.last_sent_position = current_position
-      socket_client.send_context_update(context_data)
-    end, state.config.features)
+    end, feature_config)
   end)
-end
--- Start the display process
-local function start_display_process()
-  if state.display_process then
-    return true
-  end
-
-  local binary_path = vim.fn.expand("~/.local/bin/nvim-context-tui")
-  local terminal_args = {
-    "--title=" .. state.config.tui.window_title,
-    "--override=initial_window_width=" .. state.config.tui.window_size.width .. "c",
-    "--override=initial_window_height=" .. state.config.tui.window_size.height .. "c",
-    "--override=remember_window_size=no",
-    "--hold",
-    "-e", binary_path, state.config.communication.socket_path
-  }
-
-  -- Start the terminal with TUI
-  local handle = vim.fn.jobstart(
-    { state.config.tui.terminal_cmd, unpack(terminal_args) },
-    {
-      detach = true,
-      on_exit = function(job_id, exit_code, event)
-        state.display_process = nil
-        socket_client.disconnect()
-        if exit_code ~= 0 and state.config.auto_restart_on_error then
-          vim.defer_fn(start_display_process, 2000)
-        end
-      end,
-    }
-  )
-
-  if handle > 0 then
-    state.display_process = handle
-    -- Wait for socket file to be created by TUI, then connect
-    local socket_path = state.config.communication.socket_path
-    local function try_connect()
-      if vim.fn.filereadable(socket_path) == 1 then
-        socket_client.connect(socket_path)
-        return
-      end
-      vim.defer_fn(try_connect, 100)
-    end
-    vim.defer_fn(try_connect, 200)
-    return true
-  else
-    return false
-  end
-end
-
--- Stop the display process
-local function stop_display_process()
-  socket_client.disconnect()
-  if state.display_process then
-    vim.fn.jobstop(state.display_process)
-    state.display_process = nil
-  end
 end
 
 -- Setup autocmds for cursor tracking
@@ -179,7 +89,7 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
     group = group,
     callback = function()
-      if not state.plugin_enabled then return end
+      if not state.enabled then return end
       if socket_client.is_connected() then
         update_context()
       end
@@ -190,8 +100,8 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("BufEnter", {
     group = group,
     callback = function()
-      if not state.plugin_enabled then return end
-      if has_lsp_clients() and socket_client.is_connected() then
+      if not state.enabled then return end
+      if position.has_lsp_clients() and socket_client.is_connected() then
         update_context()
       end
     end,
@@ -201,16 +111,10 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("LspAttach", {
     group = group,
     callback = function()
-      if not state.plugin_enabled then return end
+      if not state.enabled then return end
       if socket_client.is_connected() then
         update_context()
       end
-    end,
-  })
-
-  vim.api.nvim_create_autocmd("LspDetach", {
-    group = group,
-    callback = function()
     end,
   })
 
@@ -218,59 +122,52 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
     callback = function()
-      stop_display_process()
+      tui_manager.stop()
       socket_client.cleanup()
       logger.cleanup()
     end,
   })
 end
+
+-- Setup commands
 local function setup_commands()
   vim.api.nvim_create_user_command('ContextWindow', function(opts)
     local action = opts.args ~= '' and opts.args or 'toggle'
+
     if action == 'open' or action == 'start' then
-      start_display_process()
+      tui_manager.start()
     elseif action == 'close' or action == 'stop' then
-      stop_display_process()
+      tui_manager.stop()
     elseif action == 'toggle' then
-      if state.display_process then
-        stop_display_process()
-      else
-        start_display_process()
-      end
+      tui_manager.toggle()
     elseif action == 'restart' then
-      stop_display_process()
-      vim.defer_fn(start_display_process, 500)
+      tui_manager.restart()
     elseif action == 'status' then
       local status = M.get_status()
       logger.plugin("info", "HoverFloat Status", status)
-      -- Add to your setup_commands function
+    elseif action == 'performance' then
+      local report = performance.get_performance_report()
+      logger.plugin("info", "Performance Report", { report = report })
     elseif action == 'warm-cache' then
-      symbol_prefetcher.force_prefetch_current_buffer()
+      prefetcher.force_prefetch_current_buffer()
       logger.plugin("info", "Cache warming initiated")
     elseif action == 'clear-cache' then
-      symbol_prefetcher.clear_cache()
+      prefetcher.clear_cache()
       state.last_sent_position = nil
       logger.plugin("info", "Prefetch cache cleared")
-    elseif action == 'performance' then
-      local cache_rate = state.total_requests > 0 and (state.cache_hits / state.total_requests) or 0
-      local stats = {
-        cache_hit_rate = cache_rate,
-        total_requests = state.total_requests,
-        cache_hits = state.cache_hits,
-        prefetch_stats = symbol_prefetcher.get_stats(),
-      }
-      logger.plugin("info", "Performance Statistics", stats)
     else
       logger.plugin("info", 'Usage: ContextWindow [open|close|toggle|restart|status]')
     end
   end, {
     nargs = '?',
     complete = function()
-      return { 'open', 'close', 'toggle', 'restart', 'status' }
+      return { 'open', 'close', 'toggle', 'restart', 'status', 'performance', 'warm-cache', 'clear-cache' }
     end,
     desc = 'Manage LSP context window'
   })
 end
+
+-- Setup keymaps
 local function setup_keymaps()
   vim.keymap.set('n', '<leader>co', ':ContextWindow open<CR>',
     { desc = 'Open Context Window', silent = true })
@@ -282,117 +179,87 @@ local function setup_keymaps()
     { desc = 'Restart Context Window', silent = true })
   vim.keymap.set('n', '<leader>cs', ':ContextWindow status<CR>',
     { desc = 'Context Window Status', silent = true })
-  vim.keymap.set('n', '<leader>cn', ':ContextWindow reconnect<CR>',
-    { desc = 'Reconnect Context Window', silent = true })
-  vim.keymap.set('n', '<leader>ch', ':ContextWindow health<CR>',
-    { desc = 'Context Window Health', silent = true })
-  vim.keymap.set('n', '<leader>cd', ':ContextWindow debug<CR>',
-    { desc = 'Toggle Debug Mode', silent = true })
-  -- Development/debug shortcuts
-  vim.keymap.set('n', '<leader>csd', ':ContextWindow switch-debug<CR>',
-    { desc = 'Switch to Debug Build', silent = true })
-  vim.keymap.set('n', '<leader>csp', ':ContextWindow switch-prod<CR>',
-    { desc = 'Switch to Production Build', silent = true })
-  vim.keymap.set('n', '<leader>cbi', ':ContextWindow binary-info<CR>',
-    { desc = 'Show Binary Info', silent = true })
-  -- Log viewing shortcuts
-  vim.keymap.set('n', '<leader>cll', ':ContextWindow logs<CR>',
-    { desc = 'Show Log File', silent = true })
-  vim.keymap.set('n', '<leader>clt', ':ContextWindow log-tail<CR>',
-    { desc = 'Show Log Tail', silent = true })
-  vim.keymap.set('n', '<leader>clp', ':ContextWindow log-path<CR>',
-    { desc = 'Show Log Path', silent = true })
-  vim.keymap.set('n', '<leader>cw', ':ContextWindow warm-cache<CR>',
-    { desc = 'Warm Prefetch Cache', silent = true })
   vim.keymap.set('n', '<leader>cp', ':ContextWindow performance<CR>',
     { desc = 'Show Performance Stats', silent = true })
-  vim.keymap.set('n', '<leader>cwk', ':ContextWindow performance<CR>',
-    { desc = 'Disable Plugin', silent = true })
+  vim.keymap.set('n', '<leader>cw', ':ContextWindow warm-cache<CR>',
+    { desc = 'Warm Prefetch Cache', silent = true })
 end
-function M.setup(opts)
-  state.config = vim.tbl_deep_extend('force', default_config, opts or {})
 
+-- Main setup function
+function M.setup(opts)
+  -- Setup configuration first
+  local current_config = config.setup(opts or {})
+  
+  -- Setup logging
   logger.setup({
-    debug = state.config.communication.debug,
-    log_dir = state.config.communication.log_dir
+    debug = current_config.communication.debug,
+    log_dir = current_config.communication.log_dir
   })
-  symbol_prefetcher.setup_prefetching()
-  socket_client.setup(state.config.communication)
+  
+  -- Setup all modules
+  lsp_service.setup()
+  socket_client.setup(current_config.communication)
+  tui_manager.setup()
+  
+  -- Setup prefetching if enabled
+  if current_config.prefetching.enabled then
+    prefetcher.setup()
+    logger.info("Plugin", "Symbol prefetching enabled")
+  end
+  
+  -- Setup UI components
   setup_autocmds()
   setup_commands()
   setup_keymaps()
-  vim.defer_fn(function()
-    start_display_process()
-  end, 1000)
+  
+  -- Start performance monitoring
+  performance.start_monitoring()
+  
+  logger.info("Plugin", "HoverFloat initialized successfully")
 end
 
-M.start = start_display_process
-M.stop = stop_display_process
-M.toggle = function()
-  if state.display_process then
-    stop_display_process()
-  else
-    start_display_process()
-  end
-end
-M.enable = function()
-  state.plugin_enabled = true
-end
-M.disable = function()
-  state.plugin_enabled = false
-end
-M.is_running = function()
-  return state.display_process ~= nil
-end
-M.connect = function()
-  return socket_client.connect(state.config.communication.socket_path)
-end
-M.disconnect = function()
-  return socket_client.disconnect()
-end
-M.reconnect = function()
-  return socket_client.force_reconnect()
-end
-M.is_connected = function()
-  return socket_client.is_connected()
-end
-M.get_connection_status = function()
-  return socket_client.get_status()
-end
-M.get_connection_health = function()
-  return socket_client.get_connection_health()
-end
-M.clear_message_queue = function()
-  return socket_client.clear_queue()
-end
-M.get_status = function()
+-- Public API functions
+M.start = tui_manager.start
+M.stop = tui_manager.stop
+M.toggle = tui_manager.toggle
+M.restart = tui_manager.restart
+
+M.enable = function() state.enabled = true end
+M.disable = function() state.enabled = false end
+M.is_running = tui_manager.is_running
+
+M.connect = socket_client.connect
+M.disconnect = socket_client.disconnect
+M.is_connected = socket_client.is_connected
+
+-- Status and diagnostics
+function M.get_status()
   local socket_status = socket_client.get_status()
+  local tui_status = tui_manager.get_status()
+  local prefetch_stats = prefetcher.get_stats()
+  local perf_stats = performance.get_stats()
+  
   return {
-    enabled = state.plugin_enabled,
-    tui_running = state.display_process ~= nil,
+    enabled = state.enabled,
+    tui_running = tui_status.running,
     socket_connected = socket_status.connected,
     socket_connecting = socket_status.connecting,
-    config = state.config,
-    lsp_collection_in_progress = state.lsp_collection_in_progress,
+    config = config.get(),
     socket_status = socket_status,
+    tui_status = tui_status,
+    prefetch_stats = prefetch_stats,
+    performance_stats = perf_stats,
   }
 end
-M.get_config = function()
-  return vim.deepcopy(state.config)
-end
-M.test_connection = function()
-  return socket_client.test_connection()
-end
-M.force_update = function()
-  update_context()
-end
-M.reset_connection = function()
-  socket_client.reset()
-end
-M.enable_debug = function()
-  state.config.communication.debug = true
-end
-M.disable_debug = function()
-  state.config.communication.debug = false
-end
+
+M.get_config = config.get
+M.force_update = update_context
+M.clear_cache = prefetcher.clear_cache
+
+-- Legacy compatibility functions
+M.get_connection_status = socket_client.get_status
+M.get_connection_health = socket_client.get_connection_health
+M.test_connection = socket_client.test_connection
+M.reset_connection = socket_client.reset
+
 return M

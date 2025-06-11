@@ -1,6 +1,8 @@
+-- lua/hoverfloat/communication/socket_client.lua - Socket communication client
 local M = {}
 local uv = vim.uv or vim.loop
-local logger = require('hoverfloat.logger')
+local message_handler = require('hoverfloat.communication.message_handler')
+local logger = require('hoverfloat.utils.logger')
 
 -- Connection state
 local state = {
@@ -8,9 +10,23 @@ local state = {
   socket = nil,
   connected = false,
   connecting = false,
-  message_queue = {},
   incoming_buffer = "",
+  message_queue = nil,
+  rate_limiter = nil,
 }
+
+-- Configuration
+local config = {
+  connection_timeout = 5000,
+  max_queue_size = 100,
+  max_messages_per_second = 10,
+}
+
+-- Initialize components
+local function initialize_components()
+  state.message_queue = message_handler.MessageQueue.new(config.max_queue_size)
+  state.rate_limiter = message_handler.RateLimiter.new(config.max_messages_per_second)
+end
 
 -- Clean up connection resources
 local function cleanup_connection()
@@ -20,133 +36,115 @@ local function cleanup_connection()
     end
     state.socket = nil
   end
-
+  
   state.connected = false
   state.connecting = false
   state.incoming_buffer = ""
 end
 
--- Connection manager - centralized retry logic
-local connection_manager = {
-  can_retry = true,
-}
-
-function connection_manager.handle_failure(reason)
-  cleanup_connection()
-  if connection_manager.can_retry then
-    connection_manager.can_retry = false
-    create_connection()
-  end
-end
-
-function connection_manager.reset()
-  connection_manager.can_retry = true
-end
-
--- Configuration
-local config = {
-  connection_timeout = 5000, -- 5 seconds
-  max_queue_size = 100,      -- Maximum queued messages
-}
-
--- Message creation helper
-local function create_message(msg_type, data)
-  local message = {
-    type = msg_type,
-    timestamp = vim.uv.now(),
-    data = data or {}
-  }
-  return vim.json.encode(message) .. '\n'
-end
-
+-- Handle connection failure with retry logic
 local function handle_connection_failure(reason)
-  connection_manager.handle_failure(reason)
+  logger.socket("error", "Connection failed: " .. reason)
+  cleanup_connection()
+  
+  -- Could implement retry logic here if needed
 end
 
-
-local function handle_message(json_str)
-  local ok, message = pcall(vim.json.decode, json_str)
-  if not ok then
-    return
-  end
-end
-
--- Handle incoming data from socket
+-- Process incoming messages
 local function handle_incoming_data(data)
   if not data then return end
-
-  -- Append to buffer
+  
+  -- Append to buffer and parse messages
   state.incoming_buffer = state.incoming_buffer .. data
-
-  -- Process complete lines (newline-delimited messages)
-  while true do
-    local newline_pos = state.incoming_buffer:find('\n')
-    if not newline_pos then break end
-
-    local line = state.incoming_buffer:sub(1, newline_pos - 1)
-    state.incoming_buffer = state.incoming_buffer:sub(newline_pos + 1)
-
-    if line ~= "" then
-      handle_message(line)
-    end
+  local messages, remaining = message_handler.parse_incoming_data(state.incoming_buffer)
+  state.incoming_buffer = remaining
+  
+  -- Process each message
+  for _, message in ipairs(messages) do
+    handle_received_message(message)
   end
 end
 
-local function send_raw_message(json_message)
+-- Handle received messages
+function handle_received_message(message)
+  logger.socket("debug", "Received message: " .. message.type)
+  
+  -- Handle specific message types
+  if message.type == "pong" then
+    -- Handle pong response for ping monitoring
+    logger.socket("debug", "Received pong")
+  elseif message.type == "error" then
+    logger.socket("error", "Server error: " .. (message.data.error or "Unknown"))
+  end
+  
+  -- Additional message handling could be added here
+end
+
+-- Send message with rate limiting and queuing
+local function send_raw_message(message)
+  -- Check rate limiting
+  if not state.rate_limiter:check_limit() then
+    logger.socket("warn", "Rate limit exceeded, queuing message")
+    state.message_queue:add(message)
+    return false
+  end
+  
+  -- Check connection
   if not state.connected or not state.socket then
-    if #state.message_queue < config.max_queue_size then
-      table.insert(state.message_queue, json_message)
-    end
+    state.message_queue:add(message)
     if not state.connecting then
-      create_connection()
+      M.connect()
     end
     return false
   end
-
-  local ok = state.socket:write(json_message, function(err)
+  
+  -- Send message
+  local ok = state.socket:write(message, function(err)
     if err then
       handle_connection_failure("Write failed: " .. err)
     end
   end)
-
+  
   if not ok then
     handle_connection_failure("Socket write failed")
     return false
   end
-
+  
   return true
 end
 
+-- Flush queued messages
 local function flush_message_queue()
-  if not state.connected or not state.socket or #state.message_queue == 0 then
+  if not state.connected or not state.socket then
     return
   end
-
-  for _, queued_msg in ipairs(state.message_queue) do
-    if not send_raw_message(queued_msg) then
-      break
+  
+  local queued_messages = state.message_queue:get_all()
+  for _, message in ipairs(queued_messages) do
+    if not send_raw_message(message) then
+      break -- Stop if sending fails
     end
   end
-
-  state.message_queue = {}
 end
 
-
-function create_connection()
+-- Create connection to socket
+local function create_connection()
   if state.connecting or state.connected then
     return
   end
-
+  
   state.connecting = true
-
+  logger.socket("info", "Attempting to connect to " .. state.socket_path)
+  
   local socket = uv.new_pipe(false)
   if not socket then
     handle_connection_failure("Failed to create socket")
     return
   end
-
+  
   local connection_completed = false
-
+  
+  -- Connection timeout
   vim.defer_fn(function()
     if not connection_completed then
       connection_completed = true
@@ -157,80 +155,88 @@ function create_connection()
       handle_connection_failure("Connection timeout")
     end
   end, config.connection_timeout)
-
+  
+  -- Attempt connection
   socket:connect(state.socket_path, function(err)
     connection_completed = true
-
+    
     if err then
       socket:close()
       handle_connection_failure("Connection failed: " .. err)
       return
     end
-
+    
+    -- Connection successful
     state.socket = socket
     state.connected = true
     state.connecting = false
     state.incoming_buffer = ""
-
+    
+    logger.socket("info", "Connected successfully")
+    
+    -- Start reading data
     socket:read_start(function(read_err, data)
       if read_err then
         handle_connection_failure("Read error: " .. read_err)
         return
       end
-
+      
       if data then
         handle_incoming_data(data)
       else
         handle_connection_failure("Connection closed by server")
       end
     end)
-
+    
+    -- Flush any queued messages
     flush_message_queue()
   end)
 end
 
--- Public API functions
+-- Public API
 
 function M.setup(user_config)
   config = vim.tbl_deep_extend("force", config, user_config or {})
-
+  
   if user_config and user_config.socket_path then
     state.socket_path = user_config.socket_path
   end
+  
+  initialize_components()
 end
 
 function M.connect(socket_path)
   if socket_path then
     state.socket_path = socket_path
   end
-  connection_manager.reset()
+  
   create_connection()
 end
 
 function M.disconnect()
   if state.connected and state.socket then
-    local disconnect_msg = create_message("disconnect", {})
+    local disconnect_msg = message_handler.create_disconnect_message("client_disconnect")
     send_raw_message(disconnect_msg)
     vim.defer_fn(cleanup_connection, 100)
   else
     cleanup_connection()
   end
-
-  state.message_queue = {}
+  
+  state.message_queue:clear()
 end
 
 function M.send_context_update(context_data)
-  local message = create_message("context_update", context_data)
+  local message = message_handler.create_context_update(context_data)
   return send_raw_message(message)
 end
 
-function M.send_error(error_message)
-  local message = create_message("error", { error = error_message })
+function M.send_error(error_message, details)
+  local message = message_handler.create_error_message(error_message, details)
   return send_raw_message(message)
 end
 
 function M.send_status(status_data)
-  local message = create_message("status", status_data)
+  local message = message_handler.create_status_message(status_data)
   return send_raw_message(message)
 end
 
@@ -238,18 +244,12 @@ function M.send_ping()
   if not state.connected then
     return false
   end
-
-  local ping_msg = create_message("ping", { timestamp = vim.uv.now() })
+  
+  local ping_msg = message_handler.create_ping_message()
   return send_raw_message(ping_msg)
 end
 
-function M.send_custom(msg_type, data)
-  local message = create_message(msg_type, data)
-  return send_raw_message(message)
-end
-
--- Status and diagnostic functions
-
+-- Status functions
 function M.is_connected()
   return state.connected
 end
@@ -263,34 +263,8 @@ function M.get_status()
     connected = state.connected,
     connecting = state.connecting,
     socket_path = state.socket_path,
-    queued_messages = #state.message_queue,
+    queued_messages = state.message_queue:size(),
   }
-end
-
-function M.get_socket_path()
-  return state.socket_path
-end
-
-function M.force_reconnect()
-  cleanup_connection()
-  connection_manager.reset()
-  create_connection()
-end
-
-function M.clear_queue()
-  local queue_size = #state.message_queue
-  state.message_queue = {}
-  return queue_size
-end
-
--- Test and diagnostic functions
-
-function M.test_connection()
-  if not state.connected then
-    return false, "Not connected"
-  end
-
-  return M.send_ping()
 end
 
 function M.get_connection_health()
@@ -298,9 +272,9 @@ function M.get_connection_health()
     connected = state.connected,
     connecting = state.connecting,
     socket_exists = vim.fn.filereadable(state.socket_path) == 1,
-    queue_size = #state.message_queue,
+    queue_size = state.message_queue:size(),
   }
-
+  
   if state.connected then
     health.status = "connected"
   elseif state.connecting then
@@ -308,37 +282,37 @@ function M.get_connection_health()
   else
     health.status = "disconnected"
   end
-
+  
   return health
+end
+
+function M.force_reconnect()
+  cleanup_connection()
+  create_connection()
+end
+
+function M.clear_queue()
+  local queue_size = state.message_queue:size()
+  state.message_queue:clear()
+  return queue_size
+end
+
+function M.test_connection()
+  if not state.connected then
+    return false, "Not connected"
+  end
+  
+  return M.send_ping()
 end
 
 function M.cleanup()
   M.disconnect()
 end
 
--- Manual recovery functions
-function M.check_and_recover()
-  if not state.connected and not state.connecting then
-    create_connection()
-    return true
-  end
-  return false
-end
-
-function M.retry_failed_connection()
-  if not state.connected and not state.connecting then
-    create_connection()
-    return true
-  end
-  return false
-end
-
--- Reset function for testing
 function M.reset()
   M.disconnect()
 end
 
--- Auto-connect on first use
 function M.ensure_connected()
   if not state.connected and not state.connecting then
     create_connection()

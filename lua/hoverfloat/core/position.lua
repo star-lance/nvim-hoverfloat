@@ -1,0 +1,235 @@
+-- lua/hoverfloat/core/position.lua - Position and buffer utilities
+local M = {}
+
+-- Get normalized file path
+function M.get_file_path(bufnr)
+  bufnr = bufnr or 0
+  return vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.")
+end
+
+-- Get current cursor position
+function M.get_cursor_position(win)
+  win = win or 0
+  return vim.api.nvim_win_get_cursor(win)
+end
+
+-- Get current position info with all context
+function M.get_current_position()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local cursor_pos = M.get_cursor_position()
+  
+  return {
+    file = M.get_file_path(bufnr),
+    line = cursor_pos[1],
+    col = cursor_pos[2] + 1, -- Convert to 1-based
+    timestamp = vim.uv.now(),
+    bufnr = bufnr,
+  }
+end
+
+-- Get word under cursor
+function M.get_word_under_cursor()
+  return vim.fn.expand('<cword>')
+end
+
+-- Get symbol at cursor with position
+function M.get_symbol_at_cursor()
+  local word = M.get_word_under_cursor()
+  if not word or word == '' then
+    return nil
+  end
+  
+  local pos = M.get_current_position()
+  return {
+    word = word,
+    file = pos.file,
+    line = pos.line,
+    col = pos.col,
+    bufnr = pos.bufnr,
+  }
+end
+
+-- Create unique position identifier
+function M.get_position_identifier(bufnr, line, col, word)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  if not line or not col then
+    local cursor_pos = M.get_cursor_position()
+    line = cursor_pos[1]
+    col = cursor_pos[2] + 1
+  end
+  
+  word = word or M.get_word_under_cursor()
+  local file = M.get_file_path(bufnr)
+  
+  return string.format("%s:%d:%d:%s", file, line, col, word or "")
+end
+
+-- Create LSP position parameters for any position
+function M.make_lsp_position_params(bufnr, line, col)
+  bufnr = bufnr or 0
+  
+  -- Get LSP client offset encoding
+  local offset_encoding = 'utf-16'
+  local clients = vim.lsp.get_clients({ bufnr = bufnr })
+  if #clients > 0 then
+    offset_encoding = clients[1].offset_encoding or 'utf-16'
+  end
+  
+  -- Use current cursor position if line/col not provided
+  if not line or not col then
+    local cursor_pos = M.get_cursor_position()
+    line = cursor_pos[1]
+    col = cursor_pos[2] + 1
+  end
+  
+  return {
+    textDocument = vim.lsp.util.make_text_document_params(bufnr),
+    position = {
+      line = line - 1, -- Convert to 0-based for LSP
+      character = math.max(0, col - 1)
+    }
+  }
+end
+
+-- Get visible line range for window
+function M.get_visible_range(bufnr, win)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  local wins = win and { win } or vim.fn.win_findbuf(bufnr)
+  if #wins == 0 then
+    return nil
+  end
+  
+  local target_win = wins[1]
+  return {
+    start_line = vim.fn.line('w0', target_win),
+    end_line = vim.fn.line('w$', target_win),
+  }
+end
+
+-- Expand visible range for prefetching
+function M.get_prefetch_range(bufnr, radius_lines, win)
+  local visible = M.get_visible_range(bufnr, win)
+  if not visible then
+    return nil
+  end
+  
+  radius_lines = radius_lines or 30
+  
+  return {
+    start_line = math.max(1, visible.start_line - radius_lines),
+    end_line = visible.end_line + radius_lines,
+  }
+end
+
+-- Check if buffer is valid for LSP operations
+function M.is_valid_buffer(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  -- Check if buffer exists and is loaded
+  if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
+    return false
+  end
+  
+  -- Check buffer type
+  local buftype = vim.api.nvim_get_option_value('buftype', { buf = bufnr })
+  if buftype ~= '' then
+    return false
+  end
+  
+  -- Check if file exists
+  local file_path = M.get_file_path(bufnr)
+  if not file_path or file_path == '' then
+    return false
+  end
+  
+  return true
+end
+
+-- Hardcoded excluded filetypes (reasonable defaults)
+local EXCLUDED_FILETYPES = { "help", "qf", "netrw", "fugitive", "TelescopePrompt", "packer", "alpha" }
+
+-- Check if filetype should be excluded
+function M.should_exclude_filetype(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  local filetype = vim.api.nvim_get_option_value('filetype', { buf = bufnr })
+  
+  return vim.tbl_contains(EXCLUDED_FILETYPES, filetype)
+end
+
+-- Check if buffer has LSP clients
+function M.has_lsp_clients(bufnr)
+  bufnr = bufnr or 0
+  return #vim.lsp.get_clients({ bufnr = bufnr }) > 0
+end
+
+-- Get LSP clients for buffer
+function M.get_lsp_clients(bufnr)
+  bufnr = bufnr or 0
+  return vim.lsp.get_clients({ bufnr = bufnr })
+end
+
+-- Check if buffer is suitable for operations
+function M.is_suitable_for_lsp(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  return M.is_valid_buffer(bufnr) and 
+         not M.should_exclude_filetype(bufnr) and
+         M.has_lsp_clients(bufnr)
+end
+
+-- Location info utilities
+local LocationUtils = {}
+
+-- Format location for display
+function LocationUtils.format_location(location)
+  if not location or not location.file then
+    return "Unknown location"
+  end
+  
+  return string.format("%s:%d:%d", location.file, location.line or 0, location.col or 0)
+end
+
+-- Get shortened file path
+function LocationUtils.get_short_path(file_path, max_length)
+  if not file_path or file_path == "" then
+    return "Unknown"
+  end
+  
+  max_length = max_length or 50
+  
+  if #file_path <= max_length then
+    return file_path
+  end
+  
+  -- Show ".../" + last part
+  return ".../" .. file_path:sub(#file_path - max_length + 4)
+end
+
+-- Check if location is valid
+function LocationUtils.is_valid(location)
+  return location and 
+         location.file and location.file ~= "" and
+         location.line and location.line > 0 and
+         location.col and location.col > 0
+end
+
+-- Compare two locations for equality
+function LocationUtils.equals(loc1, loc2)
+  if not loc1 and not loc2 then
+    return true
+  end
+  if not loc1 or not loc2 then
+    return false
+  end
+  
+  return loc1.file == loc2.file and 
+         loc1.line == loc2.line and 
+         loc1.col == loc2.col
+end
+
+M.location = LocationUtils
+
+return M
