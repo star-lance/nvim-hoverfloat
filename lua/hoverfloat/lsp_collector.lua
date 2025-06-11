@@ -198,5 +198,4 @@ function M.get_symbol_at_cursor()
   }
 end
 
-
 return M

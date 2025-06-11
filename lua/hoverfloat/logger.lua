@@ -2,24 +2,21 @@ local M = {}
 
 local state = {
   log_file = nil,
-  log_path = nil,
   debug_enabled = false,
 }
 
 function M.setup(config)
   config = config or {}
-  
   local session_id = os.date("%Y%m%d_%H%M%S") .. "_" .. math.random(1000, 9999)
-  local log_dir = config.log_dir or (vim.fn.stdpath('log') .. '/hoverfloat')
+  local log_dir = (vim.fn.stdpath('log') .. '/hoverfloat')
   vim.fn.mkdir(log_dir, 'p')
-  
-  state.log_path = log_dir .. '/debug_' .. session_id .. '.log'
+  local log_path = log_dir .. '/debug_' .. session_id .. '.log'
   state.debug_enabled = config.debug or false
-  
+
   if state.debug_enabled then
-    state.log_file = io.open(state.log_path, 'w')
+    state.log_file = io.open(log_path, 'w')
   end
-  
+
   initialize_logging_functions()
 end
 
@@ -30,6 +27,16 @@ function M.cleanup()
   end
 end
 
+local function noop() end
+
+M.debug = noop
+M.info = noop
+M.warn = noop
+M.error = noop
+M.socket = noop
+M.lsp = noop
+M.plugin = noop
+
 local function write_to_file(level, component, message, data)
   local timestamp = os.date("%H:%M:%S.") .. string.format("%03d", (vim.uv.now() % 1000))
   local log_line = string.format("[%s] %s [%s] %s", timestamp, level, component, message)
@@ -39,8 +46,6 @@ local function write_to_file(level, component, message, data)
   state.log_file:write(log_line .. "\n")
   state.log_file:flush()
 end
-
-local function noop() end
 
 function initialize_logging_functions()
   if state.debug_enabled and state.log_file then
@@ -56,7 +61,7 @@ function initialize_logging_functions()
     M.error = function(component, message, data)
       write_to_file("ERROR", component, message, data)
     end
-    
+
     local level_funcs = { debug = M.debug, info = M.info, warn = M.warn, error = M.error }
     M.socket = function(level, message, data)
       (level_funcs[level] or M.debug)("Socket", message, data)
@@ -78,22 +83,9 @@ function initialize_logging_functions()
   end
 end
 
-M.debug = noop
-M.info = noop
-M.warn = noop
-M.error = noop
-M.socket = noop
-M.lsp = noop
-M.plugin = noop
-
-function M.get_log_path()
-  return state.log_path
-end
-
 function M.get_status()
   return {
     enabled = state.debug_enabled,
-    log_path = state.log_path,
     file_open = state.log_file ~= nil
   }
 end

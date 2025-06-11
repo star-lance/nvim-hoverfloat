@@ -129,7 +129,6 @@ local function start_display_process()
     "-e", binary_path, state.config.communication.socket_path
   }
 
-
   -- Start the terminal with TUI
   local handle = vim.fn.jobstart(
     { state.config.tui.terminal_cmd, unpack(terminal_args) },
@@ -147,7 +146,6 @@ local function start_display_process()
 
   if handle > 0 then
     state.display_process = handle
-
     -- Wait for socket file to be created by TUI, then connect
     local socket_path = state.config.communication.socket_path
     local function try_connect()
@@ -155,12 +153,9 @@ local function start_display_process()
         socket_client.connect(socket_path)
         return
       end
-      -- Retry after short delay if socket file doesn't exist yet
       vim.defer_fn(try_connect, 100)
     end
-    -- Give TUI a moment to start, then begin checking for socket
     vim.defer_fn(try_connect, 200)
-
     return true
   else
     return false
@@ -229,11 +224,9 @@ local function setup_autocmds()
     end,
   })
 end
-
 local function setup_commands()
   vim.api.nvim_create_user_command('ContextWindow', function(opts)
     local action = opts.args ~= '' and opts.args or 'toggle'
-
     if action == 'open' or action == 'start' then
       start_display_process()
     elseif action == 'close' or action == 'stop' then
@@ -278,8 +271,6 @@ local function setup_commands()
     desc = 'Manage LSP context window'
   })
 end
-
--- Setup keymaps
 local function setup_keymaps()
   vim.keymap.set('n', '<leader>co', ':ContextWindow open<CR>',
     { desc = 'Open Context Window', silent = true })
@@ -318,34 +309,23 @@ local function setup_keymaps()
   vim.keymap.set('n', '<leader>cwk', ':ContextWindow performance<CR>',
     { desc = 'Disable Plugin', silent = true })
 end
-
--- Main setup function
 function M.setup(opts)
-  state.config = vim.tbl_deep_extend("force", default_config, opts or {})
+  state.config = vim.tbl_deep_extend('force', default_config, opts or {})
 
   logger.setup({
     debug = state.config.communication.debug,
     log_dir = state.config.communication.log_dir
   })
-
-  if state.config.prefetching.enabled then
-    symbol_prefetcher.setup_prefetching()
-    logger.info("Prefetcher", "Symbol prefetching enabled")
-  end
-
+  symbol_prefetcher.setup_prefetching()
   socket_client.setup(state.config.communication)
   setup_autocmds()
   setup_commands()
   setup_keymaps()
-
-  if state.config.auto_start then
-    vim.defer_fn(function()
-      start_display_process()
-    end, 1000)
-  end
+  vim.defer_fn(function()
+    start_display_process()
+  end, 1000)
 end
 
--- Enhanced Public API
 M.start = start_display_process
 M.stop = stop_display_process
 M.toggle = function()
@@ -355,47 +335,36 @@ M.toggle = function()
     start_display_process()
   end
 end
-
 M.enable = function()
   state.plugin_enabled = true
 end
-
 M.disable = function()
   state.plugin_enabled = false
 end
-
 M.is_running = function()
   return state.display_process ~= nil
 end
-
 M.connect = function()
   return socket_client.connect(state.config.communication.socket_path)
 end
-
 M.disconnect = function()
   return socket_client.disconnect()
 end
-
 M.reconnect = function()
   return socket_client.force_reconnect()
 end
-
 M.is_connected = function()
   return socket_client.is_connected()
 end
-
 M.get_connection_status = function()
   return socket_client.get_status()
 end
-
 M.get_connection_health = function()
   return socket_client.get_connection_health()
 end
-
 M.clear_message_queue = function()
   return socket_client.clear_queue()
 end
-
 M.get_status = function()
   local socket_status = socket_client.get_status()
   return {
@@ -408,31 +377,22 @@ M.get_status = function()
     socket_status = socket_status,
   }
 end
-
 M.get_config = function()
   return vim.deepcopy(state.config)
 end
-
--- Test and diagnostic functions
 M.test_connection = function()
   return socket_client.test_connection()
 end
-
 M.force_update = function()
   update_context()
 end
-
 M.reset_connection = function()
   socket_client.reset()
 end
-
 M.enable_debug = function()
   state.config.communication.debug = true
 end
-
 M.disable_debug = function()
   state.config.communication.debug = false
 end
-
-
 return M

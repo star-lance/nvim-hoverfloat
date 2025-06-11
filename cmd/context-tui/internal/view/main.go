@@ -44,7 +44,7 @@ const (
 func Render(width, height int, data *ViewData, s *styles.Styles) string {
 	// Calculate layout dimensions
 	headerHeight := 3
-	footerHeight := 3
+	footerHeight := 2
 	contentHeight := height - headerHeight - footerHeight
 
 	// Build the main sections
@@ -67,7 +67,7 @@ func Render(width, height int, data *ViewData, s *styles.Styles) string {
 // renderHeader creates the header section
 func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 	// Header line with status
-	title := "🔍 NEOVIM LSP CONTEXT"
+	title := "hoverfloat"
 
 	var status string
 	if data.Connected {
@@ -298,7 +298,6 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
-
 // Helper functions
 
 func formatHoverContent(hover []string, width int, s *styles.Styles) string {
@@ -430,7 +429,6 @@ func renderFooter(width int, data *ViewData, s *styles.Styles) string {
 
 // Utility functions
 
-
 func centerContent(content string, width int) string {
 	lines := strings.Split(content, "\n")
 	var centeredLines []string
@@ -470,7 +468,6 @@ func max(a, b int) int {
 	}
 	return b
 }
-
 
 // isMarkdownContent detects if content contains markdown formatting
 func isMarkdownContent(content []string) bool {
@@ -536,6 +533,6 @@ func renderMarkdown(content string, width int, darkTheme bool) (string, error) {
 	if result == "" {
 		return content, fmt.Errorf("empty result")
 	}
-	
+
 	return result, nil
 }
