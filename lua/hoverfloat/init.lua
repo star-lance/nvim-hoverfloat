@@ -6,7 +6,6 @@ local logger = require('hoverfloat.logger')
 
 local state = {
   config = {},
-  update_timer = nil,
   display_process = nil,
   plugin_enabled = true,
   binary_path = nil,
@@ -108,7 +107,6 @@ local default_config = {
     socket_path = "/tmp/nvim_context.sock",
     connection_timeout = 5000, -- 5 seconds connection timeout
     max_queue_size = 100,      -- Maximum queued messages
-    update_delay = 0,          -- Debounce delay for cursor updates (ms)
     debug = false,             -- Enable debug logging
     log_dir = nil,             -- Custom log directory (default: stdpath('cache')/hoverfloat)
   },
@@ -376,7 +374,7 @@ local function setup_autocmds()
     callback = function()
       if not state.plugin_enabled then return end
       if has_lsp_clients() and socket_client.is_connected() then
-        vim.defer_fn(update_context, 100)
+        update_context()
       end
     end,
   })
@@ -387,7 +385,7 @@ local function setup_autocmds()
     callback = function(event)
       if not state.plugin_enabled then return end
       if socket_client.is_connected() then
-        vim.defer_fn(update_context, 200)
+        update_context()
       end
     end,
   })
