@@ -8,16 +8,12 @@ local state = {
   config = {},
   display_process = nil,
   plugin_enabled = true,
-  binary_path = nil,
-  last_sent_hash = nil,
   lsp_collection_in_progress = false,
 }
 
 local default_config = {
   -- TUI settings
   tui = {
-    binary_name = "nvim-context-tui",
-    binary_path = nil, -- Auto-detect or user-specified
     window_title = "nvim-hoverfloat-tui",
     window_size = { width = 80, height = 80 },
     terminal_cmd = "kitty", -- terminal emulator to spawn TUI in
@@ -36,60 +32,15 @@ local default_config = {
     show_type_info = true,
   },
 
-  -- Cursor tracking settings
-  tracking = {
-    excluded_filetypes = { "help", "qf", "netrw", "fugitive", "TelescopePrompt" },
-  },
-
   -- Auto-start settings
   auto_start = true,
   auto_restart_on_error = true,
 }
 
-local function find_tui_binary()
-  if state.binary_path then
-    return state.binary_path
-  end
-
-  local possible_paths = {
-    './build/debug/nvim-context-tui-debug',
-    './build/nvim-context-tui',
-    vim.fn.expand('~/.local/bin/nvim-context-tui-debug'),
-    vim.fn.expand('~/.local/bin/nvim-context-tui'),
-    '/usr/local/bin/nvim-context-tui',
-    '/usr/bin/nvim-context-tui',
-  }
-
-  for _, path in ipairs(possible_paths) do
-    if vim.fn.executable(path) == 1 then
-      state.binary_path = path
-      return path
-    end
-  end
-
-  for _, binary_name in ipairs({ "nvim-context-tui-debug", "nvim-context-tui" }) do
-    if vim.fn.executable(binary_name) == 1 then
-      state.binary_path = binary_name
-      return state.binary_path
-    end
-  end
-
-  return nil
-end
-
 local function has_lsp_clients()
   return #vim.lsp.get_clients({ bufnr = 0 }) > 0
 end
 
-local function should_skip_update()
-  local filetype = vim.bo.filetype
-  for _, excluded in ipairs(state.config.tracking.excluded_filetypes) do
-    if filetype == excluded then
-      return true
-    end
-  end
-  return false
-end
 
 -- Generate content hash for LSP context data (excluding timestamp)
 local function hash_context_data(context_data)
@@ -109,7 +60,7 @@ local function hash_context_data(context_data)
 end
 
 local function should_update_context()
-  return state.plugin_enabled and has_lsp_clients() and not should_skip_update()
+  return state.plugin_enabled and has_lsp_clients()
 end
 
 -- Content-based context update - only prevents sending exact duplicates
@@ -128,11 +79,9 @@ local function update_context()
   -- Always collect LSP context information
   lsp_collector.gather_context_info(function(context_data)
     state.lsp_collection_in_progress = false
-
     if not context_data then
       return
     end
-
 
     -- Generate hash of the new context data
     local new_hash = hash_context_data(context_data)
@@ -151,16 +100,7 @@ local function start_display_process()
     return true
   end
 
-  logger.plugin("info", "Starting display process")
-
-  -- Find TUI binary
-  local binary_path = find_tui_binary()
-  if not binary_path then
-    logger.plugin("error", "Cannot start: TUI binary not found. Run 'make install' to build the binary.")
-    return false
-  end
-
-  -- Build terminal command
+  local binary_path = vim.fn.expand("~/.local/bin/nvim-context-tui")
   local terminal_args = {
     "--title=" .. state.config.tui.window_title,
     "--override=initial_window_width=" .. state.config.tui.window_size.width .. "c",
@@ -177,86 +117,43 @@ local function start_display_process()
     {
       detach = true,
       on_exit = function(job_id, exit_code, event)
-        logger.plugin("warn", "TUI process exited", {
-          job_id = job_id,
-          exit_code = exit_code,
-          event = event
-        })
-
         state.display_process = nil
-
-        -- Disconnect socket when TUI exits
         socket_client.disconnect()
-
-
         if exit_code ~= 0 and state.config.auto_restart_on_error then
           vim.defer_fn(start_display_process, 2000)
         end
       end,
-      on_stderr = function(job_id, data, event)
-        if #data > 1 or (data[1] and data[1] ~= "") then
-          local error_msg = table.concat(data, "\n")
-          logger.plugin("error", "TUI stderr output", {
-            job_id = job_id,
-            error = error_msg,
-            lines = data
-          })
-        end
-      end,
-      on_stdout = function(job_id, data, event)
-        if #data > 1 or (data[1] and data[1] ~= "") then
-          local stdout_msg = table.concat(data, "\n")
-        end
-      end
     }
   )
 
   if handle > 0 then
     state.display_process = handle
-    logger.plugin("info", "Context display window started", {
-      pid = handle,
-      binary = binary_path,
-      socket = state.config.communication.socket_path,
-      log_path = logger.get_log_path()
-    })
-
-    -- Wait for TUI to initialize, then try to connect
-    vim.defer_fn(function()
-      socket_client.connect(state.config.communication.socket_path)
-
-
-      -- Send initial update after connection is established
-      vim.defer_fn(function()
-        if socket_client.is_connected() then
-          update_context()
-        end
-      end, 1000)
-    end, 1000)
-
+    
+    -- Wait for socket file to be created by TUI, then connect
+    local socket_path = state.config.communication.socket_path
+    local function try_connect()
+      if vim.fn.filereadable(socket_path) == 1 then
+        socket_client.connect(socket_path)
+        return
+      end
+      -- Retry after short delay if socket file doesn't exist yet
+      vim.defer_fn(try_connect, 100)
+    end
+    -- Give TUI a moment to start, then begin checking for socket
+    vim.defer_fn(try_connect, 200)
+    
     return true
   else
-    logger.plugin("error", "Failed to start display process", {
-      handle = handle,
-      terminal = state.config.tui.terminal_cmd,
-      binary = binary_path
-    })
     return false
   end
 end
 
 -- Stop the display process
 local function stop_display_process()
-  logger.plugin("info", "Stopping display process")
-
-  -- Disconnect socket first
   socket_client.disconnect()
-
-
   if state.display_process then
     vim.fn.jobstop(state.display_process)
     state.display_process = nil
-    logger.plugin("info", "Context display window closed")
-  else
   end
 end
 
@@ -289,7 +186,7 @@ local function setup_autocmds()
   -- Handle LSP attach/detach
   vim.api.nvim_create_autocmd("LspAttach", {
     group = group,
-    callback = function(event)
+    callback = function()
       if not state.plugin_enabled then return end
       if socket_client.is_connected() then
         update_context()
@@ -299,7 +196,7 @@ local function setup_autocmds()
 
   vim.api.nvim_create_autocmd("LspDetach", {
     group = group,
-    callback = function(event)
+    callback = function()
     end,
   })
 
@@ -307,10 +204,9 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
     callback = function()
-      logger.plugin("info", "Neovim exiting, cleaning up HoverFloat")
       stop_display_process()
       socket_client.cleanup()
-      logger.cleanup() -- Close log file properly
+      logger.cleanup()
     end,
   })
 end
@@ -345,23 +241,6 @@ local function setup_commands()
     end,
     desc = 'Manage LSP context window'
   })
-
-  -- Legacy commands for backwards compatibility
-  vim.api.nvim_create_user_command("ContextWindowOpen", function()
-    start_display_process()
-  end, { desc = "Open LSP context display window" })
-
-  vim.api.nvim_create_user_command("ContextWindowClose", function()
-    stop_display_process()
-  end, { desc = "Close LSP context display window" })
-
-  vim.api.nvim_create_user_command("ContextWindowToggle", function()
-    if state.display_process then
-      stop_display_process()
-    else
-      start_display_process()
-    end
-  end, { desc = "Toggle LSP context display window" })
 end
 
 -- Setup keymaps
@@ -400,45 +279,23 @@ end
 
 -- Main setup function
 function M.setup(opts)
-  logger.plugin("info", "Setting up HoverFloat plugin")
-
-  -- Merge user configuration with defaults
   state.config = vim.tbl_deep_extend("force", default_config, opts or {})
-
-
-  -- Initialize file-based logger (non-disruptive)
+  
   logger.setup({
     debug = state.config.communication.debug,
     log_dir = state.config.communication.log_dir
   })
-
-  logger.plugin("info", "File-based logging initialized", {
-    log_path = logger.get_log_path(),
-    debug_enabled = state.config.communication.debug
-  })
-
-  -- Initialize socket client with configuration
+  
   socket_client.setup(state.config.communication)
-
-  -- Setup plugin components
   setup_autocmds()
   setup_commands()
   setup_keymaps()
-
-  -- Auto-start if configured
+  
   if state.config.auto_start then
     vim.defer_fn(function()
       start_display_process()
-    end, 1000) -- Give Neovim time to fully load
+    end, 1000)
   end
-
-  logger.plugin("info", "LSP Context Window plugin loaded successfully", {
-    debug_mode = state.config.communication.debug,
-    auto_start = state.config.auto_start,
-    socket_path = state.config.communication.socket_path,
-    uses_builtin_lsp = true,
-    log_path = logger.get_log_path()
-  })
 end
 
 -- Enhanced Public API
@@ -454,12 +311,10 @@ end
 
 M.enable = function()
   state.plugin_enabled = true
-  logger.plugin("info", "Context window plugin enabled")
 end
 
 M.disable = function()
   state.plugin_enabled = false
-  logger.plugin("info", "Context window plugin disabled")
 end
 
 M.is_running = function()
@@ -501,29 +356,14 @@ M.get_status = function()
     tui_running = state.display_process ~= nil,
     socket_connected = socket_status.connected,
     socket_connecting = socket_status.connecting,
-    binary_path = state.binary_path,
     config = state.config,
-    last_sent_hash = state.last_sent_hash and state.last_sent_hash:sub(1, 8) .. "..." or nil,
     lsp_collection_in_progress = state.lsp_collection_in_progress,
     socket_status = socket_status,
-    uptime_ms = vim.uv.now() - state.startup_time,
-    last_error_time = state.last_error_time,
   }
 end
 
 M.get_config = function()
   return vim.deepcopy(state.config)
-end
-
-M.set_binary_path = function(path)
-  if vim.fn.executable(path) == 1 then
-    state.binary_path = path
-    logger.plugin("info", "Binary path updated", path)
-    return true
-  else
-    logger.plugin("error", "Binary not executable", path)
-    return false
-  end
 end
 
 -- Test and diagnostic functions
@@ -536,18 +376,16 @@ M.force_update = function()
 end
 
 M.reset_connection = function()
-  logger.plugin("info", "Resetting connection")
   socket_client.reset()
 end
 
 M.enable_debug = function()
   state.config.communication.debug = true
-  logger.plugin("info", "Debug mode enabled")
 end
 
 M.disable_debug = function()
   state.config.communication.debug = false
-  logger.plugin("info", "Debug mode disabled")
 end
+
 
 return M

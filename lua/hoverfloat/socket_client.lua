@@ -11,6 +11,23 @@ local state = {
   incoming_buffer = "",
 }
 
+-- Connection manager - centralized retry logic
+local connection_manager = {
+  can_retry = true,
+  
+  handle_failure = function(reason)
+    cleanup_connection()
+    if connection_manager.can_retry then
+      connection_manager.can_retry = false
+      create_connection()
+    end
+  end,
+  
+  reset = function()
+    connection_manager.can_retry = true
+  end
+}
+
 -- Configuration
 local config = {
   connection_timeout = 5000,    -- 5 seconds
@@ -46,22 +63,14 @@ local function cleanup_connection()
 end
 
 local function handle_connection_failure(reason)
-  logger.socket("error", "Connection failed", { reason = reason })
-  cleanup_connection()
+  connection_manager.handle_failure(reason)
 end
 
 
 local function handle_message(json_str)
   local ok, message = pcall(vim.json.decode, json_str)
   if not ok then
-    logger.socket("error", "Message parse error", { error = message })
     return
-  end
-  
-  if message.type == "error" then
-    logger.socket("error", "TUI reported error", message.data and message.data.error or "Unknown error")
-  elseif message.type == "pong" then
-    logger.socket("debug", "Received pong")
   end
 end
 
@@ -88,7 +97,6 @@ end
 
 local function send_raw_message(json_message)
   if not state.connected or not state.socket then
-    -- Queue message and attempt connection
     if #state.message_queue < config.max_queue_size then
       table.insert(state.message_queue, json_message)
     end
@@ -101,19 +109,11 @@ local function send_raw_message(json_message)
   local ok = state.socket:write(json_message, function(err)
     if err then
       handle_connection_failure("Write failed: " .. err)
-      -- Retry connection immediately on write failure
-      if not state.connecting then
-        create_connection()
-      end
     end
   end)
 
   if not ok then
     handle_connection_failure("Socket write failed")
-    -- Retry connection immediately on write failure
-    if not state.connecting then
-      create_connection()
-    end
     return false
   end
 
@@ -140,7 +140,6 @@ function create_connection()
     return
   end
 
-  logger.socket("info", "Starting connection attempt")
   state.connecting = true
 
   local socket = uv.new_pipe(false)
@@ -151,7 +150,6 @@ function create_connection()
 
   local connection_completed = false
 
-  -- Use vim.defer_fn for timeout
   vim.defer_fn(function()
     if not connection_completed then
       connection_completed = true
@@ -177,15 +175,9 @@ function create_connection()
     state.connecting = false
     state.incoming_buffer = ""
 
-    logger.socket("info", "Socket connection established")
-
     socket:read_start(function(read_err, data)
       if read_err then
         handle_connection_failure("Read error: " .. read_err)
-        -- Attempt immediate reconnection on read error
-        if not state.connecting then
-          create_connection()
-        end
         return
       end
 
@@ -193,10 +185,6 @@ function create_connection()
         handle_incoming_data(data)
       else
         handle_connection_failure("Connection closed by server")
-        -- Attempt immediate reconnection when server closes
-        if not state.connecting then
-          create_connection()
-        end
       end
     end)
 
@@ -218,6 +206,7 @@ function M.connect(socket_path)
   if socket_path then
     state.socket_path = socket_path
   end
+  connection_manager.reset()
   create_connection()
 end
 
@@ -287,6 +276,7 @@ end
 
 function M.force_reconnect()
   cleanup_connection()
+  connection_manager.reset()
   create_connection()
 end
 
@@ -332,7 +322,6 @@ end
 -- Manual recovery functions
 function M.check_and_recover()
   if not state.connected and not state.connecting then
-    logger.socket("info", "Manual recovery triggered")
     create_connection()
     return true
   end
@@ -341,7 +330,6 @@ end
 
 function M.retry_failed_connection()
   if not state.connected and not state.connecting then
-    logger.socket("info", "Manual retry triggered")
     create_connection()
     return true
   end
@@ -359,5 +347,6 @@ function M.ensure_connected()
     create_connection()
   end
 end
+
 
 return M

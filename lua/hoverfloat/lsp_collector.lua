@@ -25,7 +25,6 @@ local function get_hover_info(callback)
     return
   end
 
-  logger.lsp("debug", "Requesting hover")
   local clients = vim.lsp.get_clients()
   local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
   vim.lsp.buf_request(0, 'textDocument/hover', params, function(err, result)
@@ -36,8 +35,6 @@ local function get_hover_info(callback)
 
     local hover_lines = vim.lsp.util.convert_input_to_markdown_lines(result.contents)
     local filtered_lines = vim.tbl_filter(function(line) return line and line:match("%S") end, hover_lines)
-
-    logger.lsp("debug", "Hover info retrieved", { lines = #filtered_lines })
     callback(#filtered_lines > 0 and filtered_lines or nil)
   end)
 end
@@ -48,7 +45,6 @@ local function get_definition_info(callback)
     return
   end
 
-  logger.lsp("debug", "Requesting definition")
   local clients = vim.lsp.get_clients()
   local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
   vim.lsp.buf_request(0, 'textDocument/definition', params, function(err, result)
@@ -62,7 +58,6 @@ local function get_definition_info(callback)
     if items and #items > 0 then
       local item = items[1]
       local def_info = { file = item.filename, line = item.lnum, col = item.col }
-      logger.lsp("debug", "Definition info retrieved", def_info)
       callback(def_info)
     else
       callback(nil)
@@ -76,7 +71,6 @@ local function get_references_info(callback, max_refs)
     return
   end
 
-  logger.lsp("debug", "Requesting references")
   local clients = vim.lsp.get_clients()
   local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
   params.context = { includeDeclaration = true }
@@ -99,7 +93,6 @@ local function get_references_info(callback, max_refs)
       table.insert(ref_info.locations, { file = item.filename, line = item.lnum, col = item.col })
     end
 
-    logger.lsp("debug", "References info retrieved", { total = ref_info.count, displayed = #ref_info.locations })
     callback(ref_info)
   end)
 end
@@ -110,7 +103,6 @@ local function get_type_definition_info(callback)
     return
   end
 
-  logger.lsp("debug", "Requesting type definition")
   local clients = vim.lsp.get_clients()
   local params = vim.lsp.util.make_position_params(0, clients[1] and clients[1].offset_encoding or 'utf-16')
   vim.lsp.buf_request(0, 'textDocument/typeDefinition', params, function(err, result)
@@ -124,7 +116,6 @@ local function get_type_definition_info(callback)
     if items and #items > 0 then
       local item = items[1]
       local type_info = { file = item.filename, line = item.lnum, col = item.col }
-      logger.lsp("debug", "Type definition info retrieved", type_info)
       callback(type_info)
     else
       callback(nil)
@@ -138,8 +129,6 @@ function M.gather_context_info(completion_callback, config)
     completion_callback(nil)
     return
   end
-
-  logger.lsp("debug", "Gathering LSP context info", { clients = vim.tbl_map(function(c) return c.name end, clients) })
 
   local context_data = get_current_position()
   local pending_requests = 0
@@ -155,7 +144,6 @@ function M.gather_context_info(completion_callback, config)
     end
 
     if pending_requests == 0 then
-      logger.lsp("debug", "All LSP requests completed")
       completion_callback(context_data)
     end
   end
@@ -209,5 +197,6 @@ function M.get_symbol_at_cursor()
     col = pos.col,
   }
 end
+
 
 return M

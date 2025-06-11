@@ -1,125 +1,105 @@
 local M = {}
 
--- Logger state
-local logger_state = {
+local state = {
   log_file = nil,
   log_path = nil,
   debug_enabled = false,
-  session_id = nil,
 }
 
--- Initialize logger
 function M.setup(config)
   config = config or {}
-
-  -- Generate session ID
-  logger_state.session_id = os.date("%Y%m%d_%H%M%S") .. "_" .. math.random(1000, 9999)
-
-  -- Set log file path
-  local log_dir = config.log_dir or (vim.fn.stdpath('cache') .. '/hoverfloat')
-  vim.fn.mkdir(log_dir, 'p') -- Create directory if it doesn't exist
-
-  logger_state.log_path = log_dir .. '/debug_' .. logger_state.session_id .. '.log'
-  logger_state.debug_enabled = config.debug or false
-
-  -- Create/open log file
-  if logger_state.debug_enabled then
-    logger_state.log_file = io.open(logger_state.log_path, 'w')
-    if logger_state.log_file then
-      logger_state.log_file:write(string.format("=== HoverFloat Debug Session Started: %s ===\n",
-        os.date("%Y-%m-%d %H:%M:%S")))
-      logger_state.log_file:write(string.format("Session ID: %s\n", logger_state.session_id))
-      logger_state.log_file:write(string.format("Neovim Version: %s\n", vim.version()))
-      logger_state.log_file:write(string.format("Log Path: %s\n", logger_state.log_path))
-      logger_state.log_file:write("=====================================\n\n")
-      logger_state.log_file:flush()
-    end
+  
+  local session_id = os.date("%Y%m%d_%H%M%S") .. "_" .. math.random(1000, 9999)
+  local log_dir = config.log_dir or (vim.fn.stdpath('log') .. '/hoverfloat')
+  vim.fn.mkdir(log_dir, 'p')
+  
+  state.log_path = log_dir .. '/debug_' .. session_id .. '.log'
+  state.debug_enabled = config.debug or false
+  
+  if state.debug_enabled then
+    state.log_file = io.open(state.log_path, 'w')
   end
+  
+  initialize_logging_functions()
 end
 
--- Close logger
 function M.cleanup()
-  if logger_state.log_file then
-    logger_state.log_file:write(string.format("\n=== Session Ended: %s ===\n", os.date("%Y-%m-%d %H:%M:%S")))
-    logger_state.log_file:close()
-    logger_state.log_file = nil
+  if state.log_file then
+    state.log_file:close()
+    state.log_file = nil
   end
 end
 
--- Write to log file only (non-disruptive)
 local function write_to_file(level, component, message, data)
-  if not logger_state.debug_enabled or not logger_state.log_file then
-    return
-  end
-
   local timestamp = os.date("%H:%M:%S.") .. string.format("%03d", (vim.uv.now() % 1000))
   local log_line = string.format("[%s] %s [%s] %s", timestamp, level, component, message)
-
   if data then
     log_line = log_line .. ": " .. vim.inspect(data)
   end
-
-  logger_state.log_file:write(log_line .. "\n")
-  logger_state.log_file:flush() -- Ensure immediate write
+  state.log_file:write(log_line .. "\n")
+  state.log_file:flush()
 end
 
--- Send to TUI window for display (optional)
-local function send_to_tui(level, component, message, data)
-  -- Only send important messages to TUI to avoid spam
-  if level == "ERROR" or level == "WARN" then
-    -- This will be implemented later - send structured message to TUI
-    -- for now, just write to file
+local function noop() end
+
+function initialize_logging_functions()
+  if state.debug_enabled and state.log_file then
+    M.debug = function(component, message, data)
+      write_to_file("DEBUG", component, message, data)
+    end
+    M.info = function(component, message, data)
+      write_to_file("INFO", component, message, data)
+    end
+    M.warn = function(component, message, data)
+      write_to_file("WARN", component, message, data)
+    end
+    M.error = function(component, message, data)
+      write_to_file("ERROR", component, message, data)
+    end
+    
+    local level_funcs = { debug = M.debug, info = M.info, warn = M.warn, error = M.error }
+    M.socket = function(level, message, data)
+      (level_funcs[level] or M.debug)("Socket", message, data)
+    end
+    M.lsp = function(level, message, data)
+      (level_funcs[level] or M.debug)("LSP", message, data)
+    end
+    M.plugin = function(level, message, data)
+      (level_funcs[level] or M.debug)("Plugin", message, data)
+    end
+  else
+    M.debug = noop
+    M.info = noop
+    M.warn = noop
+    M.error = noop
+    M.socket = noop
+    M.lsp = noop
+    M.plugin = noop
   end
 end
 
--- Logging functions (non-disruptive)
-function M.debug(component, message, data)
-  write_to_file("DEBUG", component, message, data)
-end
+M.debug = noop
+M.info = noop
+M.warn = noop
+M.error = noop
+M.socket = noop
+M.lsp = noop
+M.plugin = noop
 
-function M.info(component, message, data)
-  write_to_file("INFO", component, message, data)
-  send_to_tui("INFO", component, message, data)
-end
-
-function M.warn(component, message, data)
-  write_to_file("WARN", component, message, data)
-  send_to_tui("WARN", component, message, data)
-end
-
-function M.error(component, message, data)
-  write_to_file("ERROR", component, message, data)
-  send_to_tui("ERROR", component, message, data)
-end
-
--- Component-specific logging functions
-local level_funcs = { debug = M.debug, info = M.info, warn = M.warn, error = M.error }
-
-function M.socket(level, message, data)
-  (level_funcs[level] or M.debug)("Socket", message, data)
-end
-
-function M.lsp(level, message, data)
-  (level_funcs[level] or M.debug)("LSP", message, data)
-end
-
-function M.plugin(level, message, data)
-  (level_funcs[level] or M.debug)("Plugin", message, data)
-end
-
--- Get current log file path
 function M.get_log_path()
-  return logger_state.log_path
+  return state.log_path
 end
 
--- Get logger status
 function M.get_status()
   return {
-    enabled = logger_state.debug_enabled,
-    log_path = logger_state.log_path,
-    session_id = logger_state.session_id,
-    file_open = logger_state.log_file ~= nil
+    enabled = state.debug_enabled,
+    log_path = state.log_path,
+    file_open = state.log_file ~= nil
   }
+end
+
+function M.initialize_log_decorators(module_table)
+  return module_table or {}
 end
 
 return M
