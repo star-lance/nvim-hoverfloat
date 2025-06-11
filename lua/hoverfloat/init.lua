@@ -140,7 +140,7 @@ local function configure_hyprland_rules()
   -- Apply rules via hyprctl with error checking
   local all_rules_applied = true
   for _, rule in ipairs(rules) do
-    local cmd = string.format('hyprctl keyword "%s"', rule)
+    local cmd = string.format('hyprctl keyword "%s"', rule:gsub("%$", "\\$"))
     local result = vim.fn.system(cmd)
     local exit_code = vim.v.shell_error
     
