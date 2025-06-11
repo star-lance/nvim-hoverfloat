@@ -101,76 +101,27 @@ local function detect_window_manager()
 end
 
 local function configure_hyprland_rules()
-  local config = state.config.tui.window_manager
-  if not config.auto_configure then
-    return
-  end
+  -- Hardcoded essential rules for LSP Context window
+  local rules = {
+    'windowrulev2 = float,title:^LSP Context\\$',
+    'windowrulev2 = nofocus,title:^LSP Context\\$', 
+    'windowrulev2 = pin,title:^LSP Context\\$',
+    'windowrulev2 = move 100 100,title:^LSP Context\\$',
+    'windowrulev2 = size 640 1280,title:^LSP Context\\$'
+  }
 
-  local title = state.config.tui.window_title
-  local rules = {}
-
-  -- Load rules from config file first
-  local config_rules = load_window_manager_config("hyprland")
-  for _, rule in ipairs(config_rules) do
-    -- Replace placeholder title with actual window title
-    local processed_rule = rule:gsub("LSP Context", title)
-    table.insert(rules, processed_rule)
-  end
-
-  -- Add minimal fallback rules if no config file was loaded
-  if #config_rules == 0 then
-    logger.plugin("info", "No config file rules found, using fallback rules")
-    table.insert(rules, string.format('windowrulev2 = float,title:^(%s)$', title))
-    table.insert(rules,
-      string.format('windowrulev2 = move %d %d,title:^(%s)$', config.position.x, config.position.y, title))
-
-    if state.config.tui.window_size then
-      table.insert(rules, string.format('windowrulev2 = size %d %d,title:^(%s)$',
-        state.config.tui.window_size.width * 8,
-        state.config.tui.window_size.height * 16,
-        title))
-    end
-  end
-
-  -- Add any additional custom rules from user config
-  for _, rule in ipairs(config.hyprland_rules) do
-    table.insert(rules, rule)
-  end
-
-  -- Apply rules via hyprctl with error checking
-  local all_rules_applied = true
+  -- Apply rules
   for _, rule in ipairs(rules) do
-    local cmd = string.format('hyprctl keyword "%s"', rule:gsub("%$", "\\$"))
-    local result = vim.fn.system(cmd)
-    local exit_code = vim.v.shell_error
-    
-    if exit_code == 0 then
-      logger.plugin("debug", "Applied Hyprland rule", { rule = rule })
+    local result = vim.fn.system('hyprctl keyword "' .. rule .. '"')
+    if vim.v.shell_error == 0 then
+      logger.plugin("debug", "Applied rule", { rule = rule })
     else
-      logger.plugin("error", "Failed to apply Hyprland rule", { 
-        rule = rule, 
-        exit_code = exit_code, 
-        output = result 
-      })
-      all_rules_applied = false
+      logger.plugin("error", "Failed to apply rule", { rule = rule, output = result })
+      return false
     end
   end
   
-  -- Verify rules were actually loaded
-  if all_rules_applied then
-    local verify_cmd = 'hyprctl keyword | grep -c "windowrulev2" || echo "0"'
-    local verify_result = vim.fn.system(verify_cmd)
-    local rule_count = tonumber(vim.trim(verify_result)) or 0
-    
-    if rule_count > 0 then
-      logger.plugin("info", "Window rules verified in Hyprland", { count = rule_count })
-    else
-      logger.plugin("warn", "Window rules applied but not found in Hyprland config")
-      all_rules_applied = false
-    end
-  end
-  
-  return all_rules_applied
+  return true
 end
 
 local function setup_window_manager()
