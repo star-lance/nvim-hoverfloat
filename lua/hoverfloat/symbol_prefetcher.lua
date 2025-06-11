@@ -13,10 +13,10 @@ local prefetch_state = {
   prefetch_in_progress = {},
   -- Configuration
   config = {
-    max_concurrent_prefetch = 2,  -- Conservative to not overwhelm LSP
-    prefetch_radius_lines = 30,   -- Lines above/below viewport
+    max_concurrent_prefetch = 2, -- Conservative to not overwhelm LSP
+    prefetch_radius_lines = 30,  -- Lines above/below viewport
     cache_ttl_ms = 45000,        -- 45 second cache TTL
-    debounce_ms = 100,           // Debounce prefetch triggers
+    debounce_ms = 100,           -- Debounce prefetch triggers
   }
 }
 
@@ -40,12 +40,12 @@ end
 -- Get all document symbols for buffer
 local function get_document_symbols(bufnr, callback)
   local clients = vim.lsp.get_clients({ bufnr = bufnr })
-  
+
   if #clients == 0 then
     callback({})
     return
   end
-  
+
   -- Find client with document symbol support
   local symbol_client = nil
   for _, client in ipairs(clients) do
@@ -54,44 +54,44 @@ local function get_document_symbols(bufnr, callback)
       break
     end
   end
-  
+
   if not symbol_client then
     callback({})
     return
   end
-  
+
   local params = { textDocument = vim.lsp.util.make_text_document_params(bufnr) }
-  
+
   vim.lsp.buf_request(bufnr, 'textDocument/documentSymbol', params, function(err, result)
     if err or not result then
       callback({})
       return
     end
-    
+
     -- Flatten hierarchical symbols
     local symbols = {}
     local function flatten_symbols(symbol_list, parent_name)
       for _, symbol in ipairs(symbol_list) do
         local full_name = parent_name and (parent_name .. "." .. symbol.name) or symbol.name
-        
+
         table.insert(symbols, {
           name = full_name,
           kind = symbol.kind,
           range = symbol.range,
           selection_range = symbol.selectionRange,
-          start_line = symbol.range.start.line + 1,  -- Convert to 1-based
+          start_line = symbol.range.start.line + 1, -- Convert to 1-based
           end_line = symbol.range['end'].line + 1,
           start_col = symbol.range.start.character + 1,
           end_col = symbol.range['end'].character + 1,
         })
-        
+
         -- Process children recursively
         if symbol.children then
           flatten_symbols(symbol.children, full_name)
         end
       end
     end
-    
+
     flatten_symbols(result)
     callback(symbols)
   end)
@@ -101,28 +101,28 @@ end
 local function get_visible_symbols(bufnr)
   local symbols = prefetch_state.buffer_symbols[bufnr] or {}
   local visible_symbols = {}
-  
+
   -- Get current window visible range
   local wins = vim.fn.win_findbuf(bufnr)
   if #wins == 0 then
     return visible_symbols
   end
-  
+
   local win = wins[1]
   local top_line = vim.fn.line('w0', win)
   local bottom_line = vim.fn.line('w$', win)
-  
+
   -- Expand range for prefetching
   local prefetch_start = math.max(1, top_line - prefetch_state.config.prefetch_radius_lines)
   local prefetch_end = bottom_line + prefetch_state.config.prefetch_radius_lines
-  
+
   for _, symbol in ipairs(symbols) do
     -- Check if symbol overlaps with prefetch range
     if symbol.start_line <= prefetch_end and symbol.end_line >= prefetch_start then
       table.insert(visible_symbols, symbol)
     end
   end
-  
+
   return visible_symbols
 end
 
@@ -131,29 +131,29 @@ local function is_cache_valid(cached_data, buffer_version)
   if not cached_data then
     return false
   end
-  
+
   local now = vim.uv.now()
   local age = now - cached_data.timestamp
-  
-  return age <= prefetch_state.config.cache_ttl_ms and 
-         cached_data.buffer_version == buffer_version
+
+  return age <= prefetch_state.config.cache_ttl_ms and
+      cached_data.buffer_version == buffer_version
 end
 
 -- Get cached symbol data
 local function get_cached_symbol_data(bufnr, line, word)
   local buffer_version = vim.api.nvim_buf_get_changedtick(bufnr)
   local cache_key = get_symbol_cache_key(bufnr, line, word)
-  
+
   local buffer_cache = prefetch_state.symbol_cache[bufnr]
   if not buffer_cache then
     return nil
   end
-  
+
   local cached_data = buffer_cache[cache_key]
   if is_cache_valid(cached_data, buffer_version) then
     return cached_data
   end
-  
+
   return nil
 end
 
@@ -161,11 +161,11 @@ end
 local function store_symbol_data(bufnr, line, word, lsp_data)
   local buffer_version = vim.api.nvim_buf_get_changedtick(bufnr)
   local cache_key = get_symbol_cache_key(bufnr, line, word)
-  
+
   if not prefetch_state.symbol_cache[bufnr] then
     prefetch_state.symbol_cache[bufnr] = {}
   end
-  
+
   prefetch_state.symbol_cache[bufnr][cache_key] = {
     hover = lsp_data.hover,
     definition = lsp_data.definition,
@@ -284,59 +284,59 @@ end
 -- Prefetch LSP data for a specific symbol
 local function prefetch_symbol_lsp_data(bufnr, symbol, callback)
   local cache_key = get_symbol_cache_key(bufnr, symbol.start_line, symbol.name)
-  
+
   -- Check if already in progress
   if prefetch_state.prefetch_in_progress[cache_key] then
     return
   end
-  
+
   -- Check if already cached
   local cached = get_cached_symbol_data(bufnr, symbol.start_line, symbol.name)
   if cached then
     if callback then callback(cached) end
     return
   end
-  
+
   prefetch_state.prefetch_in_progress[cache_key] = true
-  
+
   -- Temporarily move cursor to symbol position
   local current_win = vim.api.nvim_get_current_win()
   local current_buf = vim.api.nvim_get_current_buf()
-  
+
   -- Only prefetch if we're still in the same buffer
   if current_buf ~= bufnr then
     prefetch_state.prefetch_in_progress[cache_key] = nil
     return
   end
-  
+
   local current_pos = vim.api.nvim_win_get_cursor(current_win)
   local target_pos = { symbol.start_line, math.max(0, symbol.start_col - 1) }
-  
+
   -- Set cursor to symbol position
   vim.api.nvim_win_set_cursor(current_win, target_pos)
-  
+
   -- Collect LSP data
   local lsp_data = {}
   local pending_requests = 4
-  
+
   local function complete_request(request_type, data)
     lsp_data[request_type] = data
     pending_requests = pending_requests - 1
-    
+
     if pending_requests == 0 then
       -- Restore cursor position
       pcall(vim.api.nvim_win_set_cursor, current_win, current_pos)
-      
+
       -- Store in cache
       store_symbol_data(bufnr, symbol.start_line, symbol.name, lsp_data)
-      
+
       -- Mark as complete
       prefetch_state.prefetch_in_progress[cache_key] = nil
-      
+
       if callback then callback(lsp_data) end
     end
   end
-  
+
   -- Make all LSP requests
   get_hover_info(function(data) complete_request("hover", data) end)
   get_definition_info(function(data) complete_request("definition", data) end)
@@ -351,14 +351,13 @@ local function process_prefetch_queue()
   for _ in pairs(prefetch_state.prefetch_in_progress) do
     current_count = current_count + 1
   end
-  
+
   -- Process queue up to concurrency limit
-  while current_count < prefetch_state.config.max_concurrent_prefetch and 
-        #prefetch_state.prefetch_queue > 0 do
-    
+  while current_count < prefetch_state.config.max_concurrent_prefetch and
+    #prefetch_state.prefetch_queue > 0 do
     local item = table.remove(prefetch_state.prefetch_queue, 1)
     current_count = current_count + 1
-    
+
     prefetch_symbol_lsp_data(item.bufnr, item.symbol, function()
       -- Continue processing when complete
       vim.schedule(function()
@@ -371,17 +370,17 @@ end
 -- Queue visible symbols for prefetching
 local function queue_visible_symbols_for_prefetch(bufnr)
   local visible_symbols = get_visible_symbols(bufnr)
-  
+
   for _, symbol in ipairs(visible_symbols) do
     local cached = get_cached_symbol_data(bufnr, symbol.start_line, symbol.name)
     local cache_key = get_symbol_cache_key(bufnr, symbol.start_line, symbol.name)
-    
+
     -- Only queue if not cached and not in progress
     if not cached and not prefetch_state.prefetch_in_progress[cache_key] then
       table.insert(prefetch_state.prefetch_queue, { bufnr = bufnr, symbol = symbol })
     end
   end
-  
+
   -- Start processing queue
   process_prefetch_queue()
 end
@@ -393,12 +392,12 @@ function M.get_instant_context_data(callback)
   local cursor_line = cursor_pos[1]
   local cursor_col = cursor_pos[2] + 1
   local word = vim.fn.expand('<cword>')
-  
+
   if not word or word == "" then
     callback(nil)
     return
   end
-  
+
   -- Try to get cached data
   local cached_data = get_cached_symbol_data(bufnr, cursor_line, word)
   if cached_data then
@@ -419,7 +418,7 @@ function M.get_instant_context_data(callback)
     })
     return
   end
-  
+
   -- Not cached
   callback(nil)
 end
@@ -427,22 +426,22 @@ end
 -- Setup prefetching system
 function M.setup_prefetching()
   local group = vim.api.nvim_create_augroup("SymbolPrefetcher", { clear = true })
-  
+
   -- Update symbols and start prefetching on buffer enter
   vim.api.nvim_create_autocmd("BufEnter", {
     group = group,
     callback = function()
       local bufnr = vim.api.nvim_get_current_buf()
-      
+
       -- Don't prefetch for non-file buffers
-      local buftype = vim.api.nvim_buf_get_option(bufnr, 'buftype')
+      local buftype = vim.api.nvim_get_option_value('buftype', { buf = bufnr })
       if buftype ~= '' then
         return
       end
-      
+
       get_document_symbols(bufnr, function(symbols)
         prefetch_state.buffer_symbols[bufnr] = symbols
-        
+
         -- Start prefetching after a short delay
         vim.defer_fn(function()
           queue_visible_symbols_for_prefetch(bufnr)
@@ -450,7 +449,7 @@ function M.setup_prefetching()
       end)
     end,
   })
-  
+
   -- Prefetch on scroll/window movement
   local prefetch_timer = nil
   vim.api.nvim_create_autocmd({ "WinScrolled", "CursorMoved" }, {
@@ -460,7 +459,7 @@ function M.setup_prefetching()
       if prefetch_timer then
         prefetch_timer:stop()
       end
-      
+
       prefetch_timer = vim.defer_fn(function()
         prefetch_timer = nil
         local bufnr = vim.api.nvim_get_current_buf()
@@ -468,34 +467,34 @@ function M.setup_prefetching()
       end, prefetch_state.config.debounce_ms)
     end,
   })
-  
+
   -- Clear cache on buffer modification
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = group,
     callback = function()
       local bufnr = vim.api.nvim_get_current_buf()
-      
+
       -- Clear cache for this buffer
       prefetch_state.symbol_cache[bufnr] = {}
-      
+
       -- Clear in-progress operations
       for cache_key in pairs(prefetch_state.prefetch_in_progress) do
         if cache_key:find("^" .. vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":.") .. ":") then
           prefetch_state.prefetch_in_progress[cache_key] = nil
         end
       end
-      
+
       -- Refresh symbols and restart prefetching
       get_document_symbols(bufnr, function(symbols)
         prefetch_state.buffer_symbols[bufnr] = symbols
-        
+
         vim.defer_fn(function()
           queue_visible_symbols_for_prefetch(bufnr)
         end, 300)
       end)
     end,
   })
-  
+
   -- Cleanup on buffer delete
   vim.api.nvim_create_autocmd("BufDelete", {
     group = group,
@@ -525,14 +524,14 @@ end
 function M.get_stats()
   local total_cached = 0
   local buffers_cached = 0
-  
+
   for bufnr, buffer_cache in pairs(prefetch_state.symbol_cache) do
     buffers_cached = buffers_cached + 1
     for _ in pairs(buffer_cache) do
       total_cached = total_cached + 1
     end
   end
-  
+
   return {
     total_symbols_cached = total_cached,
     buffers_cached = buffers_cached,
