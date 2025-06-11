@@ -250,6 +250,23 @@ local function setup_commands()
     elseif action == 'status' then
       local status = M.get_status()
       logger.plugin("info", "HoverFloat Status", status)
+      -- Add to your setup_commands function
+    elseif action == 'warm-cache' then
+      symbol_prefetcher.force_prefetch_current_buffer()
+      logger.plugin("info", "Cache warming initiated")
+    elseif action == 'clear-cache' then
+      symbol_prefetcher.clear_cache()
+      state.last_sent_position = nil
+      logger.plugin("info", "Prefetch cache cleared")
+    elseif action == 'performance' then
+      local cache_rate = state.total_requests > 0 and (state.cache_hits / state.total_requests) or 0
+      local stats = {
+        cache_hit_rate = cache_rate,
+        total_requests = state.total_requests,
+        cache_hits = state.cache_hits,
+        prefetch_stats = symbol_prefetcher.get_stats(),
+      }
+      logger.plugin("info", "Performance Statistics", stats)
     else
       logger.plugin("info", 'Usage: ContextWindow [open|close|toggle|restart|status]')
     end
@@ -294,6 +311,10 @@ local function setup_keymaps()
     { desc = 'Show Log Tail', silent = true })
   vim.keymap.set('n', '<leader>clp', ':ContextWindow log-path<CR>',
     { desc = 'Show Log Path', silent = true })
+  vim.keymap.set('n', '<leader>cw', ':ContextWindow warm-cache<CR>',
+    { desc = 'Warm Prefetch Cache', silent = true })
+  vim.keymap.set('n', '<leader>cp', ':ContextWindow performance<CR>',
+    { desc = 'Show Performance Stats', silent = true })
 end
 
 -- Main setup function
