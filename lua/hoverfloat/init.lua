@@ -336,9 +336,7 @@ local function start_display_process()
 
     -- Wait for TUI to initialize, then try to connect
     vim.defer_fn(function()
-      if state.config.auto_connect then
-        socket_client.connect(state.config.communication.socket_path)
-      end
+      socket_client.connect(state.config.communication.socket_path)
 
 
       -- Send initial update after connection is established
