@@ -176,13 +176,13 @@ function M.setup(opts)
 
   -- Setup logging with hardcoded defaults (no more communication.debug)
   logger.setup({
-    debug = false, -- Hardcoded default
-    log_dir = nil  -- Use default
+    debug = true, -- Hardcoded default
+    log_dir = nil -- Use default
   })
 
   -- Setup all modules
   lsp_service.setup()
-  
+
   -- Setup socket client with simplified config
   socket_client.setup({
     socket_path = current_config.socket_path,
@@ -190,10 +190,10 @@ function M.setup(opts)
     max_queue_size = 100,         -- Hardcoded default
     max_messages_per_second = 10, -- Hardcoded default
   })
-  
+
   tui_manager.setup()
   prefetcher.setup()
-  
+
   -- Setup UI components
   setup_autocmds()
   setup_commands()
