@@ -137,11 +137,40 @@ local function configure_hyprland_rules()
     table.insert(rules, rule)
   end
 
-  -- Apply rules via hyprctl
+  -- Apply rules via hyprctl with error checking
+  local all_rules_applied = true
   for _, rule in ipairs(rules) do
-    vim.fn.system(string.format('hyprctl keyword "%s"', rule))
-    logger.plugin("debug", "Applied Hyprland rule", { rule = rule })
+    local cmd = string.format('hyprctl keyword "%s"', rule)
+    local result = vim.fn.system(cmd)
+    local exit_code = vim.v.shell_error
+    
+    if exit_code == 0 then
+      logger.plugin("debug", "Applied Hyprland rule", { rule = rule })
+    else
+      logger.plugin("error", "Failed to apply Hyprland rule", { 
+        rule = rule, 
+        exit_code = exit_code, 
+        output = result 
+      })
+      all_rules_applied = false
+    end
   end
+  
+  -- Verify rules were actually loaded
+  if all_rules_applied then
+    local verify_cmd = string.format('hyprctl keyword | grep -c "windowrulev2.*%s"', title)
+    local verify_result = vim.fn.system(verify_cmd)
+    local rule_count = tonumber(verify_result:gsub("%s+", "")) or 0
+    
+    if rule_count > 0 then
+      logger.plugin("info", "Window rules verified in Hyprland", { title = title, count = rule_count })
+    else
+      logger.plugin("warn", "Window rules applied but not found in Hyprland config", { title = title })
+      all_rules_applied = false
+    end
+  end
+  
+  return all_rules_applied
 end
 
 local function setup_window_manager()
@@ -149,10 +178,12 @@ local function setup_window_manager()
   logger.plugin("info", "Detected window manager", { wm = wm or "unknown" })
 
   if wm == "hyprland" then
-    configure_hyprland_rules()
+    return configure_hyprland_rules()
   elseif wm then
     logger.plugin("warn", "Window manager detected but auto-configuration not implemented", { wm = wm })
+    return false
   end
+  return false
 end
 
 
@@ -272,7 +303,10 @@ local function start_display_process()
   end
 
   -- Setup window manager rules before spawning TUI
-  setup_window_manager()
+  local rules_applied = setup_window_manager()
+  if not rules_applied then
+    logger.plugin("warn", "Window manager rules may not be applied correctly")
+  end
 
   -- Build terminal command
   local terminal_args = {
