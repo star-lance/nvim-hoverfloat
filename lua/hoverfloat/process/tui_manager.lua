@@ -13,16 +13,21 @@ local state = {
 
 -- Build terminal arguments for TUI
 local function build_terminal_args()
-  local tui_config = config.get_section('tui')
-  local comm_config = config.get_section('communication')
+  local socket_path = config.get_socket_path()
+  local binary_path = config.get_binary_path()
+
+  -- Default TUI window configuration since these were removed from config
+  local window_title = "Neovim Context TUI"
+  local window_width = "80"
+  local window_height = "24"
 
   local args = {
-    "--title=" .. tui_config.window_title,
-    "--override=initial_window_width=" .. tui_config.window_size.width .. "c",
-    "--override=initial_window_height=" .. tui_config.window_size.height .. "c",
+    "--title=" .. window_title,
+    "--override=initial_window_width=" .. window_width .. "c",
+    "--override=initial_window_height=" .. window_height .. "c",
     "--override=remember_window_size=no",
     "--hold",
-    "-e", tui_config.binary_path, comm_config.socket_path
+    "-e", binary_path, socket_path
   }
 
   return args
@@ -35,16 +40,17 @@ function M.start()
     return true
   end
 
-  local tui_config = config.get_section('tui')
+  local binary_path = config.get_binary_path() or ''
+  local terminal_cmd = config.get_terminal_cmd()
 
   -- Check if binary exists
-  if vim.fn.executable(tui_config.binary_path) ~= 1 then
-    logger.plugin("error", "TUI binary not found: " .. tui_config.binary_path)
+  if vim.fn.executable(binary_path) ~= 1 then
+    logger.plugin("error", "TUI binary not found: " .. binary_path)
     return false
   end
 
   local terminal_args = build_terminal_args()
-  local cmd = { tui_config.terminal_cmd }
+  local cmd = { terminal_cmd }
   vim.list_extend(cmd, terminal_args)
 
   logger.plugin("info", "Starting TUI process: " .. table.concat(cmd, " "))
@@ -74,8 +80,7 @@ end
 
 -- Setup socket connection after TUI starts
 function M.setup_socket_connection()
-  local comm_config = config.get_section('communication')
-  local socket_path = comm_config.socket_path
+  local socket_path = config.get_socket_path()
 
   local function try_connect()
     if vim.fn.filereadable(socket_path) == 1 then
@@ -156,8 +161,7 @@ end
 
 -- Get TUI binary info
 function M.get_binary_info()
-  local tui_config = config.get_section('tui')
-  local binary_path = tui_config.binary_path
+  local binary_path = config.get_binary_path() or ''
 
   local info = {
     path = binary_path,
@@ -180,13 +184,9 @@ end
 
 -- Setup TUI manager
 function M.setup()
-  local config_data = config.get()
-  state.restart_on_error = config_data.auto_restart_on_error
-
-  -- Auto-start if configured
-  if config_data.auto_start then
-    vim.defer_fn(M.start, 1000)
-  end
+  -- Removed auto_restart_on_error and auto_start config dependencies
+  -- These are now handled by default behavior or can be controlled via API
+  state.restart_on_error = true -- Default to enabled
 end
 
 return M
