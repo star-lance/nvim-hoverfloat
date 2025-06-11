@@ -185,12 +185,7 @@ function M.setup(opts)
   socket_client.setup(current_config.communication)
   tui_manager.setup()
 
-  -- Setup prefetching if enabled
-  if current_config.prefetching.enabled then
-    prefetcher.setup()
-    logger.info("Plugin", "Symbol prefetching enabled")
-  end
-
+  prefetcher.setup()
   -- Setup UI components
   setup_autocmds()
   setup_commands()
