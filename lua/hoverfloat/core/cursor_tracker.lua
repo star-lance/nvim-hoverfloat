@@ -1,4 +1,4 @@
--- lua/hoverfloat/core/cursor_tracker.lua - Dedicated cursor movement tracking and context updates
+-- lua/hoverfloat/core/cursor_tracker.lua - Focused ONLY on cursor tracking
 local M = {}
 
 local position = require('hoverfloat.core.position')
@@ -162,6 +162,11 @@ end
 function M.enable()
   state.tracking_enabled = true
   logger.info("CursorTracker", "Cursor tracking enabled")
+  
+  -- Trigger immediate update if conditions are met
+  if socket_client.is_connected() then
+    vim.defer_fn(perform_context_update, 100)
+  end
 end
 
 -- Disable cursor tracking
@@ -201,6 +206,7 @@ function M.get_stats()
     last_sent_position = state.last_sent_position,
     debounce_delay = state.debounce_delay,
     has_pending_update = state.update_debounce_timer ~= nil,
+    socket_connected = socket_client.is_connected(),
   }
 end
 

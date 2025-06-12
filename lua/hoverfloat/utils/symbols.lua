@@ -5,7 +5,7 @@ local M = {}
 local symbol_kinds = {
   [1] = "File",
   [2] = "Module",
-  [3] = "Namespace", 
+  [3] = "Namespace",
   [4] = "Package",
   [5] = "Class",
   [6] = "Method",
@@ -48,7 +48,7 @@ function M.get_symbol_at_cursor()
   local position = require('hoverfloat.core.position')
   local symbol = M.get_word_under_cursor()
   local pos = position.get_current_context()
-  
+
   return {
     symbol = symbol,
     word = symbol, -- alias for compatibility
@@ -62,23 +62,23 @@ end
 -- Extract symbol at specific position
 function M.extract_symbol_from_position(bufnr, line, col)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  
+
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return nil
   end
-  
+
   -- Save current position
   local current_win = vim.api.nvim_get_current_win()
   local current_pos = vim.api.nvim_win_get_cursor(current_win)
-  
+
   -- Temporarily move cursor to target position
   vim.api.nvim_win_set_cursor(current_win, { line, col - 1 }) -- Convert to 0-based
-  
+
   local symbol = M.get_word_under_cursor()
-  
+
   -- Restore cursor position
   vim.api.nvim_win_set_cursor(current_win, current_pos)
-  
+
   return symbol ~= '' and symbol or nil
 end
 
@@ -124,12 +124,12 @@ end
 function M.should_prefetch_symbol(symbol)
   -- Skip certain symbol types that are less useful for hover info
   local skip_kinds = {
-    [1] = true,  -- File
-    [2] = true,  -- Module  
-    [3] = true,  -- Namespace
-    [4] = true,  -- Package
+    [1] = true, -- File
+    [2] = true, -- Module
+    [3] = true, -- Namespace
+    [4] = true, -- Package
   }
-  
+
   return not skip_kinds[symbol.kind]
 end
 
@@ -149,7 +149,7 @@ function M.get_symbol_priority(symbol)
     [22] = 5,  -- EnumMember
     [23] = 5,  -- Struct
   }
-  
+
   return priorities[symbol.kind] or 3
 end
 
@@ -175,11 +175,11 @@ function M.sort_symbols_by_priority(symbols)
   table.sort(sorted, function(a, b)
     local priority_a = M.get_symbol_priority(a)
     local priority_b = M.get_symbol_priority(b)
-    
+
     if priority_a ~= priority_b then
       return priority_a > priority_b
     end
-    
+
     -- Secondary sort by line number
     return a.start_line < b.start_line
   end)
@@ -208,13 +208,13 @@ end
 function M.get_symbols_near_position(symbols, line, col, radius)
   radius = radius or 5
   local near_symbols = {}
-  
+
   for _, symbol in ipairs(symbols) do
     local distance = math.min(
       math.abs(symbol.start_line - line),
       math.abs(symbol.end_line - line)
     )
-    
+
     if distance <= radius then
       table.insert(near_symbols, {
         symbol = symbol,
@@ -222,25 +222,25 @@ function M.get_symbols_near_position(symbols, line, col, radius)
       })
     end
   end
-  
+
   -- Sort by distance
   table.sort(near_symbols, function(a, b)
     return a.distance < b.distance
   end)
-  
+
   -- Return just the symbols
   local result = {}
   for _, item in ipairs(near_symbols) do
     table.insert(result, item.symbol)
   end
-  
+
   return result
 end
 
 -- Group symbols by kind
 function M.group_symbols_by_kind(symbols)
   local groups = {}
-  
+
   for _, symbol in ipairs(symbols) do
     local kind_name = M.get_symbol_kind_name(symbol.kind)
     if not groups[kind_name] then
@@ -248,7 +248,7 @@ function M.group_symbols_by_kind(symbols)
     end
     table.insert(groups[kind_name], symbol)
   end
-  
+
   return groups
 end
 
@@ -259,55 +259,55 @@ function M.get_symbol_summary(symbols)
     by_kind = {},
     line_range = { min = math.huge, max = 0 }
   }
-  
+
   for _, symbol in ipairs(symbols) do
     local kind_name = M.get_symbol_kind_name(symbol.kind)
     summary.by_kind[kind_name] = (summary.by_kind[kind_name] or 0) + 1
-    
+
     summary.line_range.min = math.min(summary.line_range.min, symbol.start_line)
     summary.line_range.max = math.max(summary.line_range.max, symbol.end_line)
   end
-  
+
   if summary.total == 0 then
     summary.line_range = { min = 0, max = 0 }
   end
-  
+
   return summary
 end
 
 -- Validate symbol structure
 function M.validate_symbol(symbol)
   local required_fields = { "name", "kind", "start_line", "end_line", "start_col", "end_col" }
-  
+
   for _, field in ipairs(required_fields) do
     if not symbol[field] then
       return false, "Missing field: " .. field
     end
   end
-  
+
   -- Validate ranges
   if symbol.start_line > symbol.end_line then
     return false, "Invalid line range"
   end
-  
+
   if symbol.start_line == symbol.end_line and symbol.start_col > symbol.end_col then
     return false, "Invalid column range"
   end
-  
+
   return true
 end
 
 -- Clean and validate symbols array
 function M.clean_symbols(symbols)
   local cleaned = {}
-  
+
   for _, symbol in ipairs(symbols) do
     local valid, error_msg = M.validate_symbol(symbol)
     if valid then
       table.insert(cleaned, symbol)
     end
   end
-  
+
   return cleaned
 end
 
@@ -315,7 +315,7 @@ end
 function M.get_symbol_info_at_cursor()
   local symbol_data = M.get_symbol_at_cursor()
   local WORD = M.get_WORD_under_cursor()
-  
+
   return {
     word = symbol_data.symbol,
     WORD = WORD,
@@ -332,20 +332,29 @@ end
 -- Check if current position is on a symbol worth caching
 function M.is_cacheable_symbol_position()
   local info = M.get_symbol_info_at_cursor()
-  
+
   -- Skip empty symbols or very short ones
   if info.is_empty or #info.word < 2 then
     return false
   end
-  
+
   -- Skip common keywords that don't have useful hover info
   local skip_keywords = {
-    ['if'] = true, ['else'] = true, ['for'] = true, ['while'] = true,
-    ['function'] = true, ['return'] = true, ['local'] = true,
-    ['and'] = true, ['or'] = true, ['not'] = true,
-    ['true'] = true, ['false'] = true, ['nil'] = true,
+    ['if'] = true,
+    ['else'] = true,
+    ['for'] = true,
+    ['while'] = true,
+    ['function'] = true,
+    ['return'] = true,
+    ['local'] = true,
+    ['and'] = true,
+    ['or'] = true,
+    ['not'] = true,
+    ['true'] = true,
+    ['false'] = true,
+    ['nil'] = true,
   }
-  
+
   return not skip_keywords[info.word:lower()]
 end
 

@@ -1,4 +1,4 @@
--- lua/hoverfloat/communication/socket_client.lua - Hardcoded socket communication
+-- lua/hoverfloat/communication/socket_client.lua - Updated with connection coordination
 local M = {}
 local uv = vim.uv or vim.loop
 local message_handler = require('hoverfloat.communication.message_handler')
@@ -174,6 +174,14 @@ local function create_connection()
     end)
     
     flush_message_queue()
+    
+    -- Trigger initial context update now that we're connected
+    vim.defer_fn(function()
+      local ok, cursor_tracker = pcall(require, 'hoverfloat.core.cursor_tracker')
+      if ok and cursor_tracker.is_tracking_enabled() then
+        cursor_tracker.force_update()
+      end
+    end, 100)
   end)
 end
 
