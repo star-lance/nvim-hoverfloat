@@ -1,99 +1,31 @@
--- lua/hoverfloat/init.lua - Simplified plugin entry point
+-- lua/hoverfloat/init.lua - Simplified plugin entry point focused on coordination
 local M = {}
 
 -- Core modules
 local lsp_service = require('hoverfloat.core.lsp_service')
-local position = require('hoverfloat.core.position')
+local cursor_tracker = require('hoverfloat.core.cursor_tracker')
 local performance = require('hoverfloat.core.performance')
 local socket_client = require('hoverfloat.communication.socket_client')
 local prefetcher = require('hoverfloat.prefetch.prefetcher')
 local tui_manager = require('hoverfloat.process.tui_manager')
 local logger = require('hoverfloat.utils.logger')
 
--- Plugin state
+-- Plugin coordination state (minimal)
 local state = {
-  last_sent_position = nil,
+  initialized = false,
 }
 
-local function should_update_context()
-  return true
-end
+-- UI module for commands and keymaps
+local ui_setup = require('hoverfloat.ui.setup')
 
--- Get position identifier for deduplication
-local function get_position_identifier()
-  return position.get_position_identifier()
-end
-
--- Main context update function
-local function update_context()
-  if not should_update_context() then
-    return
-  end
-
-  local current_position = get_position_identifier()
-  if current_position == state.last_sent_position then
-    return
-  end
-
-  local start_time = performance.start_request()
-
-  -- Try instant lookup from prefetcher first
-  prefetcher.get_instant_context_data(function(instant_data)
-    if instant_data then
-      local response_time = performance.complete_request(start_time, true, false)
-      state.last_sent_position = current_position
-      socket_client.send_context_update(instant_data)
-
-      if response_time < 2000 then
-        logger.debug("Performance", string.format("Instant response: %.2fμs", response_time))
-      end
-      return
-    end
-  end)
-end
-
--- Setup autocmds for cursor tracking
-local function setup_autocmds()
-  local group = vim.api.nvim_create_augroup("HoverFloatContext", { clear = true })
-
-  -- Track cursor movement
-  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
-    group = group,
-    callback = function()
-      if socket_client.is_connected() then
-        update_context()
-      end
-    end,
-  })
-
-  -- Update on buffer enter
-  vim.api.nvim_create_autocmd("BufEnter", {
-    group = group,
-    callback = function()
-      if position.has_lsp_clients() and socket_client.is_connected() then
-        update_context()
-      end
-    end,
-  })
-
-  -- Auto-start TUI when LSP attaches
-  vim.api.nvim_create_autocmd("LspAttach", {
-    group = group,
-    callback = function()
-      if not tui_manager.is_running() then
-        vim.defer_fn(function()
-          tui_manager.start()
-        end, 1000) -- 1 second delay to let LSP settle
-      elseif socket_client.is_connected() then
-        update_context()
-      end
-    end,
-  })
-
-  -- Cleanup on exit
+-- Setup cleanup on exit
+local function setup_cleanup()
+  local group = vim.api.nvim_create_augroup("HoverFloatCleanup", { clear = true })
+  
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
     callback = function()
+      cursor_tracker.cleanup()
       tui_manager.stop()
       socket_client.cleanup()
       logger.cleanup()
@@ -101,76 +33,62 @@ local function setup_autocmds()
   })
 end
 
--- Setup commands
-local function setup_commands()
-  vim.api.nvim_create_user_command('ContextWindow', function(opts)
-    local action = opts.args ~= '' and opts.args or 'toggle'
-
-    if action == 'open' or action == 'start' then
-      tui_manager.start()
-    elseif action == 'close' or action == 'stop' then
-      tui_manager.stop()
-    elseif action == 'toggle' then
-      tui_manager.toggle()
-    elseif action == 'restart' then
-      tui_manager.restart()
-    elseif action == 'status' then
-      local status = M.get_status()
-      logger.plugin("info", "HoverFloat Status", status)
-    else
-      logger.plugin("info", 'Usage: ContextWindow [open|close|toggle|restart|status]')
-    end
-  end, {
-    nargs = '?',
-    complete = function()
-      return { 'open', 'close', 'toggle', 'restart', 'status' }
+-- Setup auto-start functionality
+local function setup_auto_start()
+  local group = vim.api.nvim_create_augroup("HoverFloatAutoStart", { clear = true })
+  
+  -- Auto-start TUI when LSP attaches
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = group,
+    callback = function()
+      if not tui_manager.is_running() then
+        vim.defer_fn(function()
+          tui_manager.start()
+          cursor_tracker.enable()
+        end, 1000) -- 1 second delay to let LSP settle
+      end
     end,
-    desc = 'Manage LSP context window'
   })
 end
 
--- Setup keymaps
-local function setup_keymaps()
-  vim.keymap.set('n', '<leader>co', ':ContextWindow open<CR>',
-    { desc = 'Open Context Window', silent = true })
-  vim.keymap.set('n', '<leader>cc', ':ContextWindow close<CR>',
-    { desc = 'Close Context Window', silent = true })
-  vim.keymap.set('n', '<leader>ct', ':ContextWindow toggle<CR>',
-    { desc = 'Toggle Context Window', silent = true })
-  vim.keymap.set('n', '<leader>cr', ':ContextWindow restart<CR>',
-    { desc = 'Restart Context Window', silent = true })
-  vim.keymap.set('n', '<leader>cs', ':ContextWindow status<CR>',
-    { desc = 'Context Window Status', silent = true })
-end
-
--- Main setup function - ignore any user options
+-- Main setup function - focused on coordination only
 function M.setup(opts)
-  -- Ignore opts - we know what we want
+  -- Prevent double initialization
+  if state.initialized then
+    logger.plugin("warn", "Plugin already initialized")
+    return
+  end
 
+  -- Ignore opts - we know what we want (hardcoded configuration)
+  
   -- Setup logging with hardcoded values
   logger.setup({
     debug = true,
     log_dir = nil -- Use default
   })
 
-  -- Setup all modules with hardcoded configurations
+  -- Initialize all core modules with hardcoded configurations
   lsp_service.setup()
   socket_client.setup({}) -- Will use hardcoded values
   tui_manager.setup()
   prefetcher.setup()
+  
+  -- Setup cursor tracking system
+  cursor_tracker.setup_tracking()
 
-  -- Setup UI components
-  setup_autocmds()
-  setup_commands()
-  setup_keymaps()
+  -- Setup UI components via dedicated module
+  ui_setup.setup_all()
+  setup_cleanup()
+  setup_auto_start()
 
   -- Start performance monitoring
   performance.start_monitoring()
 
-  logger.info("Plugin", "HoverFloat initialized")
+  state.initialized = true
+  logger.info("Plugin", "HoverFloat initialized successfully")
 end
 
--- Public API functions
+-- Public API functions (delegation to appropriate modules)
 M.start = tui_manager.start
 M.stop = tui_manager.stop
 M.toggle = tui_manager.toggle
@@ -178,24 +96,59 @@ M.restart = tui_manager.restart
 M.is_running = tui_manager.is_running
 M.is_connected = socket_client.is_connected
 
--- Status function
+-- Cursor tracking API
+M.enable_tracking = cursor_tracker.enable
+M.disable_tracking = cursor_tracker.disable
+M.is_tracking = cursor_tracker.is_tracking_enabled
+M.force_update = cursor_tracker.force_update
+
+-- UI customization API
+M.setup_custom_keymaps = ui_setup.setup_custom_keymaps
+M.remove_default_keymaps = ui_setup.remove_default_keymaps
+
+-- Cache management
+M.clear_cache = function()
+  cursor_tracker.clear_position_cache()
+  prefetcher.clear_cache()
+end
+
+-- Status aggregation function (core coordination responsibility)
 function M.get_status()
   local socket_status = socket_client.get_status()
   local tui_status = tui_manager.get_status()
   local prefetch_stats = prefetcher.get_stats()
   local perf_stats = performance.get_stats()
+  local tracker_stats = cursor_tracker.get_stats()
+  local ui_status = ui_setup.get_status()
 
   return {
+    initialized = state.initialized,
     tui_running = tui_status.running,
     socket_connected = socket_status.connected,
+    tracking_enabled = tracker_stats.tracking_enabled,
     socket_status = socket_status,
     tui_status = tui_status,
+    tracker_stats = tracker_stats,
+    ui_status = ui_status,
     prefetch_stats = prefetch_stats,
     performance_stats = perf_stats,
   }
 end
 
-M.force_update = update_context
-M.clear_cache = prefetcher.clear_cache
+-- Health check function (coordination responsibility)
+function M.health()
+  local status = M.get_status()
+  
+  return {
+    ok = status.initialized and status.socket_connected and status.ui_status.commands_registered,
+    issues = {
+      not status.initialized and "Plugin not initialized" or nil,
+      not status.socket_connected and "Socket not connected" or nil,
+      not status.tui_running and "TUI not running" or nil,
+      not status.tracking_enabled and "Cursor tracking disabled" or nil,
+      not status.ui_status.commands_registered and "Commands not registered" or nil,
+    }
+  }
+end
 
 return M

@@ -1,0 +1,197 @@
+-- lua/hoverfloat/core/cursor_tracker.lua - Dedicated cursor movement tracking and context updates
+local M = {}
+
+local position = require('hoverfloat.core.position')
+local performance = require('hoverfloat.core.performance')
+local socket_client = require('hoverfloat.communication.socket_client')
+local prefetcher = require('hoverfloat.prefetch.prefetcher')
+local buffer = require('hoverfloat.utils.buffer')
+local logger = require('hoverfloat.utils.logger')
+
+-- Tracker state - focused on cursor tracking only
+local state = {
+  last_sent_position = nil,
+  tracking_enabled = false,
+  update_debounce_timer = nil,
+  debounce_delay = 150, -- Hardcoded debounce delay
+}
+
+-- Check if context should be updated based on current conditions
+local function should_update_context()
+  local bufnr = vim.api.nvim_get_current_buf()
+  
+  -- Skip if tracking is disabled
+  if not state.tracking_enabled then
+    return false
+  end
+  
+  -- Skip if socket is not connected
+  if not socket_client.is_connected() then
+    return false
+  end
+  
+  -- Skip if buffer is not suitable for LSP
+  if not buffer.is_suitable_for_lsp(bufnr) then
+    return false
+  end
+  
+  return true
+end
+
+-- Get position identifier for deduplication
+local function get_position_identifier()
+  return position.get_position_identifier()
+end
+
+-- Cancel any pending debounced update
+local function cancel_pending_update()
+  if state.update_debounce_timer then
+    state.update_debounce_timer:close()
+    state.update_debounce_timer = nil
+  end
+end
+
+-- Core context update function - focused responsibility
+local function perform_context_update()
+  if not should_update_context() then
+    return
+  end
+
+  local current_position = get_position_identifier()
+  if current_position == state.last_sent_position then
+    return
+  end
+
+  local start_time = performance.start_request()
+
+  -- Try instant lookup from prefetcher first
+  prefetcher.get_instant_context_data(function(instant_data)
+    if instant_data then
+      local response_time = performance.complete_request(start_time, true, false)
+      state.last_sent_position = current_position
+      socket_client.send_context_update(instant_data)
+
+      if response_time < 2000 then
+        logger.debug("CursorTracker", string.format("Instant response: %.2fμs", response_time))
+      end
+      return
+    end
+    
+    -- If no instant data available, log that we tried
+    logger.debug("CursorTracker", "No instant data available for position: " .. current_position)
+  end)
+end
+
+-- Debounced update function to avoid excessive updates
+local function schedule_context_update()
+  cancel_pending_update()
+  
+  state.update_debounce_timer = vim.defer_fn(function()
+    state.update_debounce_timer = nil
+    perform_context_update()
+  end, state.debounce_delay)
+end
+
+-- Handle cursor movement events
+local function on_cursor_moved()
+  if should_update_context() then
+    schedule_context_update()
+  end
+end
+
+-- Handle buffer enter events
+local function on_buffer_enter()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if buffer.has_lsp_clients(bufnr) and socket_client.is_connected() then
+    -- Small delay to let buffer settle
+    vim.defer_fn(perform_context_update, 100)
+  end
+end
+
+-- Handle LSP attach events
+local function on_lsp_attach()
+  if socket_client.is_connected() then
+    -- Delay to let LSP settle
+    vim.defer_fn(perform_context_update, 500)
+  end
+end
+
+-- Setup cursor tracking autocmds
+function M.setup_tracking()
+  local group = vim.api.nvim_create_augroup("HoverFloatCursorTracker", { clear = true })
+
+  -- Track cursor movement with debouncing
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+    group = group,
+    callback = on_cursor_moved,
+  })
+
+  -- Update on buffer enter
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    callback = on_buffer_enter,
+  })
+
+  -- Update when LSP attaches
+  vim.api.nvim_create_autocmd("LspAttach", {
+    group = group,
+    callback = on_lsp_attach,
+  })
+
+  logger.info("CursorTracker", "Cursor tracking autocmds registered")
+end
+
+-- Enable cursor tracking
+function M.enable()
+  state.tracking_enabled = true
+  logger.info("CursorTracker", "Cursor tracking enabled")
+end
+
+-- Disable cursor tracking
+function M.disable()
+  state.tracking_enabled = false
+  cancel_pending_update()
+  logger.info("CursorTracker", "Cursor tracking disabled")
+end
+
+-- Check if tracking is enabled
+function M.is_tracking_enabled()
+  return state.tracking_enabled
+end
+
+-- Force immediate context update (bypassing debounce)
+function M.force_update()
+  cancel_pending_update()
+  perform_context_update()
+end
+
+-- Clear position cache (useful when switching contexts)
+function M.clear_position_cache()
+  state.last_sent_position = nil
+  logger.debug("CursorTracker", "Position cache cleared")
+end
+
+-- Set debounce delay for updates
+function M.set_debounce_delay(delay_ms)
+  state.debounce_delay = delay_ms
+  logger.debug("CursorTracker", "Debounce delay set to: " .. delay_ms .. "ms")
+end
+
+-- Get tracking statistics
+function M.get_stats()
+  return {
+    tracking_enabled = state.tracking_enabled,
+    last_sent_position = state.last_sent_position,
+    debounce_delay = state.debounce_delay,
+    has_pending_update = state.update_debounce_timer ~= nil,
+  }
+end
+
+-- Cleanup on plugin shutdown
+function M.cleanup()
+  M.disable()
+  cancel_pending_update()
+  logger.debug("CursorTracker", "Cleanup completed")
+end
+
+return M
