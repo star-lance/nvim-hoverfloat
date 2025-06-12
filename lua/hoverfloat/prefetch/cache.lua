@@ -1,8 +1,13 @@
--- lua/hoverfloat/prefetch/cache.lua - Updated with symbol utilities
+-- lua/hoverfloat/prefetch/cache.lua - Simplified cache management
 local M = {}
 local position = require('hoverfloat.core.position')
 local symbols = require('hoverfloat.utils.symbols')
 local performance = require('hoverfloat.core.performance')
+
+-- Cache configuration
+local CACHE_TTL_MS = 45000  -- 45 seconds
+local MAX_CACHE_ENTRIES = 1000
+local CLEANUP_INTERVAL_MS = 60000  -- 1 minute
 
 -- Cache storage: [buffer_id][symbol_key] = cache_entry
 local symbol_cache = {}
@@ -43,8 +48,9 @@ local function is_cache_valid(cache_entry, buffer_version, ttl_ms)
   return age <= ttl_ms
 end
 
--- Hardcoded cache settings
-local CACHE_TTL_MS = 45000 -- 45 seconds
+--==============================================================================
+-- CORE CACHE OPERATIONS
+--==============================================================================
 
 -- Store LSP data in cache
 function M.store(bufnr, line, word, lsp_data)
@@ -86,34 +92,14 @@ function M.get(bufnr, line, word)
   return cache_entry
 end
 
--- Get cached data for current cursor position
-function M.get_current_cursor_data()
-  local symbol_info = symbols.get_symbol_at_cursor()
-  if not symbol_info then
-    return nil
-  end
-
-  return M.get(symbol_info.bufnr, symbol_info.line, symbol_info.word)
-end
-
 -- Check if data exists in cache
 function M.has_cached_data(bufnr, line, word)
   return M.get(bufnr, line, word) ~= nil
 end
 
--- Check if current cursor position has cached data
-function M.has_cached_data_at_cursor()
-  if not symbols.is_cacheable_symbol_position() then
-    return false
-  end
-  
-  local symbol_info = symbols.get_symbol_at_cursor()
-  if not symbol_info then
-    return false
-  end
-  
-  return M.has_cached_data(symbol_info.bufnr, symbol_info.line, symbol_info.word)
-end
+--==============================================================================
+-- CACHE MANAGEMENT
+--==============================================================================
 
 -- Clear cache for specific buffer
 function M.clear_buffer(bufnr)
@@ -154,21 +140,32 @@ function M.cleanup_expired()
   return cleaned_count
 end
 
+--==============================================================================
+-- CACHE STATISTICS
+--==============================================================================
+
+-- Get total number of cached symbols
+function M.get_total_cached_symbols()
+  local total = 0
+  for _, buffer_cache in pairs(symbol_cache) do
+    for _ in pairs(buffer_cache) do
+      total = total + 1
+    end
+  end
+  return total
+end
+
 -- Get cache statistics
 function M.get_stats()
-  local total_cached = 0
+  local total_cached = M.get_total_cached_symbols()
   local buffers_cached = 0
   local oldest_entry = nil
   local newest_entry = nil
 
   for bufnr, buffer_cache in pairs(symbol_cache) do
-    local buffer_count = 0
     buffers_cached = buffers_cached + 1
 
     for _, cache_entry in pairs(buffer_cache) do
-      buffer_count = buffer_count + 1
-      total_cached = total_cached + 1
-
       if not oldest_entry or cache_entry.timestamp < oldest_entry then
         oldest_entry = cache_entry.timestamp
       end
@@ -186,25 +183,13 @@ function M.get_stats()
   }
 end
 
--- Get total number of cached symbols
-function M.get_total_cached_symbols()
-  local total = 0
-  for _, buffer_cache in pairs(symbol_cache) do
-    for _ in pairs(buffer_cache) do
-      total = total + 1
-    end
-  end
-  return total
-end
-
--- Get cache entries for a specific buffer
-function M.get_buffer_entries(bufnr)
-  return symbol_cache[bufnr] or {}
-end
+--==============================================================================
+-- MEMORY MANAGEMENT
+--==============================================================================
 
 -- Prune cache to keep within memory limits
 function M.prune_cache(max_entries)
-  max_entries = max_entries or 1000
+  max_entries = max_entries or MAX_CACHE_ENTRIES
 
   local current_total = M.get_total_cached_symbols()
   if current_total <= max_entries then
@@ -251,6 +236,35 @@ function M.prune_cache(max_entries)
   return removed_count
 end
 
+--==============================================================================
+-- UTILITY FUNCTIONS
+--==============================================================================
+
+-- Get cached data for current cursor position
+function M.get_cursor_data()
+  if not symbols.is_cacheable_symbol_position() then
+    return nil
+  end
+  
+  local symbol_info = symbols.get_symbol_info_at_cursor()
+  if not symbol_info or symbol_info.is_empty then
+    return nil
+  end
+  
+  -- Try exact word match first
+  local cached_data = M.get(symbol_info.bufnr, symbol_info.line, symbol_info.word)
+  if cached_data then
+    return cached_data
+  end
+  
+  -- If word has special characters, try WORD as fallback
+  if symbol_info.has_special and symbol_info.WORD ~= symbol_info.word then
+    return M.get(symbol_info.bufnr, symbol_info.line, symbol_info.WORD)
+  end
+  
+  return nil
+end
+
 -- Convert cached data to format expected by socket client
 function M.format_for_socket(cached_data, current_position)
   if not cached_data or not current_position then
@@ -272,44 +286,12 @@ function M.format_for_socket(cached_data, current_position)
   }
 end
 
--- Smart cache lookup for current cursor position
-function M.get_smart_cursor_data()
-  -- Only attempt cache lookup if position is cacheable
-  if not symbols.is_cacheable_symbol_position() then
-    return nil
-  end
-  
-  local symbol_info = symbols.get_symbol_info_at_cursor()
-  if not symbol_info or symbol_info.is_empty then
-    return nil
-  end
-  
-  -- Try exact word match first
-  local cached_data = M.get(symbol_info.bufnr, symbol_info.line, symbol_info.word)
-  if cached_data then
-    return cached_data
-  end
-  
-  -- If word has special characters, try WORD as fallback
-  if symbol_info.has_special and symbol_info.WORD ~= symbol_info.word then
-    cached_data = M.get(symbol_info.bufnr, symbol_info.line, symbol_info.WORD)
-    if cached_data then
-      return cached_data
-    end
-  end
-  
-  return nil
-end
-
 -- Setup automatic cleanup
-function M.setup_auto_cleanup(cleanup_interval_ms, ttl_ms)
-  cleanup_interval_ms = cleanup_interval_ms or 60000 -- 1 minute
-  ttl_ms = ttl_ms or 45000                           -- 45 seconds
-
+function M.setup_auto_cleanup()
   local timer = vim.loop.new_timer()
-  timer:start(cleanup_interval_ms, cleanup_interval_ms, vim.schedule_wrap(function()
-    M.cleanup_expired(ttl_ms)
-    M.prune_cache(1000) -- Keep max 1000 entries
+  timer:start(CLEANUP_INTERVAL_MS, CLEANUP_INTERVAL_MS, vim.schedule_wrap(function()
+    M.cleanup_expired()
+    M.prune_cache()
   end))
 
   return timer

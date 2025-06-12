@@ -1,8 +1,21 @@
--- lua/hoverfloat/core/lsp_service.lua - Fixed URI handling with updated imports
+-- lua/hoverfloat/core/lsp_service.lua - Cleaned up LSP service layer
 local M = {}
 local position = require('hoverfloat.core.position')
 local buffer = require('hoverfloat.utils.buffer')
 local logger = require('hoverfloat.utils.logger')
+
+-- Default configuration for context gathering
+local DEFAULT_FEATURE_CONFIG = {
+  show_hover = true,
+  show_references = true,
+  show_definition = true,
+  show_type_info = true,
+  max_references = 8,
+}
+
+--==============================================================================
+-- CAPABILITY MANAGEMENT
+--==============================================================================
 
 -- Cache for capability checks to avoid repeated queries
 local capability_cache = {}
@@ -38,6 +51,10 @@ local function has_capability(capability, bufnr)
   return has_cap
 end
 
+--==============================================================================
+-- LSP REQUEST INFRASTRUCTURE
+--==============================================================================
+
 -- Generic LSP request wrapper with error handling
 local function make_lsp_request(bufnr, method, params, callback)
   local clients = buffer.get_lsp_clients(bufnr)
@@ -55,6 +72,10 @@ local function make_lsp_request(bufnr, method, params, callback)
     callback(result, nil)
   end)
 end
+
+--==============================================================================
+-- LSP DATA PROCESSING HELPERS
+--==============================================================================
 
 -- Helper function to safely get file path from LSP location
 local function get_file_from_location(location)
@@ -101,6 +122,10 @@ local function process_lsp_locations(locations)
 
   return processed
 end
+
+--==============================================================================
+-- INDIVIDUAL LSP REQUEST FUNCTIONS
+--==============================================================================
 
 -- Hover information
 function M.get_hover(bufnr, line, col, callback)
@@ -274,16 +299,14 @@ function M.get_document_symbols(bufnr, callback)
   end)
 end
 
+--==============================================================================
+-- CONTEXT ORCHESTRATION
+--==============================================================================
+
 -- Aggregate context gathering (replaces gather_context_info)
 function M.gather_all_context(bufnr, line, col, feature_config, callback)
   bufnr = bufnr or 0
-  feature_config = feature_config or {
-    show_hover = true,
-    show_references = true,
-    show_definition = true,
-    show_type_info = true,
-    max_references = 8,
-  }
+  feature_config = feature_config or DEFAULT_FEATURE_CONFIG
 
   if not buffer.is_suitable_for_lsp(bufnr) then
     callback(nil)
@@ -364,6 +387,10 @@ function M.gather_all_context(bufnr, line, col, feature_config, callback)
     callback(context_data)
   end
 end
+
+--==============================================================================
+-- SETUP AND UTILITY FUNCTIONS
+--==============================================================================
 
 -- Setup LSP service and register events
 function M.setup()

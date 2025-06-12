@@ -4,7 +4,8 @@ local M = {}
 local position = require('hoverfloat.core.position')
 local performance = require('hoverfloat.core.performance')
 local socket_client = require('hoverfloat.communication.socket_client')
-local prefetcher = require('hoverfloat.prefetch.prefetcher')
+local cache = require('hoverfloat.prefetch.cache')
+local lsp_service = require('hoverfloat.core.lsp_service')
 local buffer = require('hoverfloat.utils.buffer')
 local logger = require('hoverfloat.utils.logger')
 
@@ -64,21 +65,37 @@ local function perform_context_update()
 
   local start_time = performance.start_request()
 
-  -- Try instant lookup from prefetcher first
-  prefetcher.get_instant_context_data(function(instant_data)
-    if instant_data then
+  -- Try cache first for instant response
+  local cached_data = cache.get_cursor_data()
+  if cached_data then
+    local current_pos = position.get_current_context()
+    local formatted_data = cache.format_for_socket(cached_data, current_pos)
+    
+    if formatted_data then
       local response_time = performance.complete_request(start_time, true, false)
       state.last_sent_position = current_position
-      socket_client.send_context_update(instant_data)
-
-      if response_time < 2000 then
-        logger.debug("CursorTracker", string.format("Instant response: %.2fμs", response_time))
-      end
+      socket_client.send_context_update(formatted_data)
+      
+      logger.debug("CursorTracker", string.format("Cache hit: %.2fμs", response_time))
       return
     end
-    
-    -- If no instant data available, log that we tried
-    logger.debug("CursorTracker", "No instant data available for position: " .. current_position)
+  end
+  
+  -- Cache miss - fallback to LSP
+  local bufnr = vim.api.nvim_get_current_buf()
+  local context = position.get_current_context()
+  
+  lsp_service.gather_all_context(bufnr, context.line, context.col, nil, function(lsp_data)
+    if lsp_data then
+      local response_time = performance.complete_request(start_time, false, true)
+      state.last_sent_position = current_position
+      socket_client.send_context_update(lsp_data)
+      
+      logger.debug("CursorTracker", string.format("LSP response: %.2fms", response_time))
+    else
+      performance.complete_request(start_time, false, false)
+      logger.debug("CursorTracker", "No LSP data available for position: " .. current_position)
+    end
   end)
 end
 

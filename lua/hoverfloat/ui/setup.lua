@@ -164,24 +164,26 @@ end
 
 -- Get UI setup status
 function M.get_status()
-  -- Check if commands exist
-  local commands_exist = pcall(function()
-    vim.api.nvim_get_commands({})['ContextWindow']
-  end)
+  -- Check if commands exist properly
+  local commands_exist = false
+  local ok, commands = pcall(vim.api.nvim_get_commands, {})
+  if ok and commands and commands['ContextWindow'] then
+    commands_exist = true
+  end
 
-  -- Check if default keymaps exist
+  -- Check if default keymaps exist more efficiently
   local keymaps_exist = false
-  local keymaps = vim.api.nvim_get_keymap('n')
-  for _, keymap in ipairs(keymaps) do
-    if keymap.lhs == '<leader>ct' then
-      keymaps_exist = true
-      break
-    end
+  local ok, keymap_info = pcall(vim.fn.maparg, '<leader>ct', 'n', false, true)
+  if ok and keymap_info and keymap_info.lhs then
+    keymaps_exist = true
   end
 
   return {
     commands_registered = commands_exist,
     default_keymaps_active = keymaps_exist,
+    command_count = commands_exist and vim.tbl_count(vim.tbl_filter(function(name)
+      return name:match('^ContextWindow')
+    end, vim.tbl_keys(commands or {}))) or 0,
   }
 end
 
