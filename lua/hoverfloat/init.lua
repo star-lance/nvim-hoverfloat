@@ -60,7 +60,7 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
     group = group,
     callback = function()
-      if state.enabled and socket_client.is_connected() then
+      if socket_client.is_connected() then
         update_context()
       end
     end,
@@ -70,7 +70,7 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("BufEnter", {
     group = group,
     callback = function()
-      if state.enabled and position.has_lsp_clients() and socket_client.is_connected() then
+      if position.has_lsp_clients() and socket_client.is_connected() then
         update_context()
       end
     end,
@@ -80,15 +80,12 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("LspAttach", {
     group = group,
     callback = function()
-      if state.enabled then
-        -- Start TUI if not already running
-        if not tui_manager.is_running() then
-          vim.defer_fn(function()
-            tui_manager.start()
-          end, 1000) -- 1 second delay to let LSP settle
-        elseif socket_client.is_connected() then
-          update_context()
-        end
+      if not tui_manager.is_running() then
+        vim.defer_fn(function()
+          tui_manager.start()
+        end, 1000) -- 1 second delay to let LSP settle
+      elseif socket_client.is_connected() then
+        update_context()
       end
     end,
   })
@@ -189,7 +186,6 @@ function M.get_status()
   local perf_stats = performance.get_stats()
 
   return {
-    enabled = state.enabled,
     tui_running = tui_status.running,
     socket_connected = socket_status.connected,
     socket_status = socket_status,
