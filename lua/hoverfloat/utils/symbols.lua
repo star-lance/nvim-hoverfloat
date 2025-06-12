@@ -1,4 +1,4 @@
--- lua/hoverfloat/utils/symbols.lua - Symbol processing utilities
+-- lua/hoverfloat/utils/symbols.lua - Symbol processing utilities and extraction
 local M = {}
 
 -- LSP Symbol kinds mapping
@@ -30,6 +30,57 @@ local symbol_kinds = {
   [25] = "Operator",
   [26] = "TypeParameter",
 }
+
+-- Symbol extraction functions (moved from position.lua and new)
+
+-- Get word under cursor
+function M.get_word_under_cursor()
+  return vim.fn.expand('<cword>') or ''
+end
+
+-- Get WORD under cursor (includes more characters)
+function M.get_WORD_under_cursor()
+  return vim.fn.expand('<cWORD>') or ''
+end
+
+-- Get symbol at cursor with position context
+function M.get_symbol_at_cursor()
+  local position = require('hoverfloat.core.position')
+  local symbol = M.get_word_under_cursor()
+  local pos = position.get_current_context()
+  
+  return {
+    symbol = symbol,
+    word = symbol, -- alias for compatibility
+    file = pos.file,
+    line = pos.line,
+    col = pos.col,
+    bufnr = pos.bufnr,
+  }
+end
+
+-- Extract symbol at specific position
+function M.extract_symbol_from_position(bufnr, line, col)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return nil
+  end
+  
+  -- Save current position
+  local current_win = vim.api.nvim_get_current_win()
+  local current_pos = vim.api.nvim_win_get_cursor(current_win)
+  
+  -- Temporarily move cursor to target position
+  vim.api.nvim_win_set_cursor(current_win, { line, col - 1 }) -- Convert to 0-based
+  
+  local symbol = M.get_word_under_cursor()
+  
+  -- Restore cursor position
+  vim.api.nvim_win_set_cursor(current_win, current_pos)
+  
+  return symbol ~= '' and symbol or nil
+end
 
 -- Get symbol kind name
 function M.get_symbol_kind_name(kind)
@@ -258,6 +309,44 @@ function M.clean_symbols(symbols)
   end
   
   return cleaned
+end
+
+-- Enhanced symbol detection for better extraction
+function M.get_symbol_info_at_cursor()
+  local symbol_data = M.get_symbol_at_cursor()
+  local WORD = M.get_WORD_under_cursor()
+  
+  return {
+    word = symbol_data.symbol,
+    WORD = WORD,
+    line = symbol_data.line,
+    col = symbol_data.col,
+    file = symbol_data.file,
+    bufnr = symbol_data.bufnr,
+    is_empty = symbol_data.symbol == '',
+    has_dots = symbol_data.symbol:find('%.') ~= nil,
+    has_special = WORD ~= symbol_data.symbol,
+  }
+end
+
+-- Check if current position is on a symbol worth caching
+function M.is_cacheable_symbol_position()
+  local info = M.get_symbol_info_at_cursor()
+  
+  -- Skip empty symbols or very short ones
+  if info.is_empty or #info.word < 2 then
+    return false
+  end
+  
+  -- Skip common keywords that don't have useful hover info
+  local skip_keywords = {
+    ['if'] = true, ['else'] = true, ['for'] = true, ['while'] = true,
+    ['function'] = true, ['return'] = true, ['local'] = true,
+    ['and'] = true, ['or'] = true, ['not'] = true,
+    ['true'] = true, ['false'] = true, ['nil'] = true,
+  }
+  
+  return not skip_keywords[info.word:lower()]
 end
 
 return M

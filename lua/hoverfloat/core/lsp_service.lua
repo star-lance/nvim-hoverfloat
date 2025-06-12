@@ -1,6 +1,7 @@
--- lua/hoverfloat/core/lsp_service.lua - Fixed URI handling
+-- lua/hoverfloat/core/lsp_service.lua - Fixed URI handling with updated imports
 local M = {}
 local position = require('hoverfloat.core.position')
+local buffer = require('hoverfloat.utils.buffer')
 local logger = require('hoverfloat.utils.logger')
 
 -- Cache for capability checks to avoid repeated queries
@@ -22,7 +23,7 @@ local function has_capability(capability, bufnr)
   end
 
   -- Query LSP clients
-  local clients = position.get_lsp_clients(bufnr)
+  local clients = buffer.get_lsp_clients(bufnr)
   local has_cap = false
 
   for _, client in ipairs(clients) do
@@ -39,7 +40,7 @@ end
 
 -- Generic LSP request wrapper with error handling
 local function make_lsp_request(bufnr, method, params, callback)
-  local clients = position.get_lsp_clients(bufnr)
+  local clients = buffer.get_lsp_clients(bufnr)
   if #clients == 0 then
     callback(nil, "No LSP clients attached")
     return
@@ -216,7 +217,7 @@ end
 function M.get_document_symbols(bufnr, callback)
   bufnr = bufnr or 0
 
-  local clients = position.get_lsp_clients(bufnr)
+  local clients = buffer.get_lsp_clients(bufnr)
   if #clients == 0 then
     callback({}, "No LSP clients")
     return
@@ -284,13 +285,13 @@ function M.gather_all_context(bufnr, line, col, feature_config, callback)
     max_references = 8,
   }
 
-  if not position.is_suitable_for_lsp(bufnr) then
+  if not buffer.is_suitable_for_lsp(bufnr) then
     callback(nil)
     return
   end
 
   -- Get position info
-  local pos_info = position.get_current_position()
+  local pos_info = position.get_current_context()
   if line and col then
     pos_info.line = line
     pos_info.col = col
@@ -382,7 +383,7 @@ end
 
 -- Check if buffer has any LSP clients (convenience function)
 function M.has_lsp_clients(bufnr)
-  return position.has_lsp_clients(bufnr)
+  return buffer.has_lsp_clients(bufnr)
 end
 
 return M

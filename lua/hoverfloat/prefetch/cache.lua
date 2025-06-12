@@ -1,6 +1,7 @@
--- lua/hoverfloat/prefetch/cache.lua - LSP data caching system
+-- lua/hoverfloat/prefetch/cache.lua - Updated with symbol utilities
 local M = {}
 local position = require('hoverfloat.core.position')
+local symbols = require('hoverfloat.utils.symbols')
 local performance = require('hoverfloat.core.performance')
 
 -- Cache storage: [buffer_id][symbol_key] = cache_entry
@@ -87,17 +88,31 @@ end
 
 -- Get cached data for current cursor position
 function M.get_current_cursor_data()
-  local symbol = position.get_symbol_at_cursor()
-  if not symbol then
+  local symbol_info = symbols.get_symbol_at_cursor()
+  if not symbol_info then
     return nil
   end
 
-  return M.get(symbol.bufnr, symbol.line, symbol.word)
+  return M.get(symbol_info.bufnr, symbol_info.line, symbol_info.word)
 end
 
 -- Check if data exists in cache
 function M.has_cached_data(bufnr, line, word)
   return M.get(bufnr, line, word) ~= nil
+end
+
+-- Check if current cursor position has cached data
+function M.has_cached_data_at_cursor()
+  if not symbols.is_cacheable_symbol_position() then
+    return false
+  end
+  
+  local symbol_info = symbols.get_symbol_at_cursor()
+  if not symbol_info then
+    return false
+  end
+  
+  return M.has_cached_data(symbol_info.bufnr, symbol_info.line, symbol_info.word)
 end
 
 -- Clear cache for specific buffer
@@ -255,6 +270,35 @@ function M.format_for_socket(cached_data, current_position)
     type_definition = cached_data.type_definition,
     cache_hit = true,
   }
+end
+
+-- Smart cache lookup for current cursor position
+function M.get_smart_cursor_data()
+  -- Only attempt cache lookup if position is cacheable
+  if not symbols.is_cacheable_symbol_position() then
+    return nil
+  end
+  
+  local symbol_info = symbols.get_symbol_info_at_cursor()
+  if not symbol_info or symbol_info.is_empty then
+    return nil
+  end
+  
+  -- Try exact word match first
+  local cached_data = M.get(symbol_info.bufnr, symbol_info.line, symbol_info.word)
+  if cached_data then
+    return cached_data
+  end
+  
+  -- If word has special characters, try WORD as fallback
+  if symbol_info.has_special and symbol_info.WORD ~= symbol_info.word then
+    cached_data = M.get(symbol_info.bufnr, symbol_info.line, symbol_info.WORD)
+    if cached_data then
+      return cached_data
+    end
+  end
+  
+  return nil
 end
 
 -- Setup automatic cleanup

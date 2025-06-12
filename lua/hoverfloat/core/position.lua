@@ -1,4 +1,4 @@
--- lua/hoverfloat/core/position.lua - Position and buffer utilities
+-- lua/hoverfloat/core/position.lua - Pure position and coordinate operations
 local M = {}
 
 -- Get normalized file path
@@ -22,28 +22,14 @@ function M.get_current_context()
   return {
     file = M.get_file_path(bufnr),
     line = line,
-    col = col + 1,
+    col = col + 1, -- Convert to 1-based
     timestamp = vim.uv.now(),
     bufnr = bufnr,
   }
 end
 
--- Get symbol at cursor with position
-function M.get_symbol_at_cursor()
-  local symbol = vim.fn.expand('<cword>') or ''
-
-  local pos = M.get_current_context()
-  return {
-    symbol = symbol,
-    file = pos.file,
-    line = pos.line,
-    col = pos.col,
-    bufnr = pos.bufnr,
-  }
-end
-
 -- Create unique position identifier
-function M.get_position_identifier(bufnr, line, col, symbol)
+function M.get_position_identifier(bufnr, line, col, word)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
   if not line or not col then
@@ -52,10 +38,14 @@ function M.get_position_identifier(bufnr, line, col, symbol)
     col = cursor_pos[2] + 1
   end
 
-  symbol = symbol or M.get_symbol_at_cursor()
-  local file = M.get_file_path(bufnr)
+  -- Use symbols utility for word extraction if not provided
+  if not word then
+    local symbols = require('hoverfloat.utils.symbols')
+    word = symbols.get_word_under_cursor()
+  end
 
-  return string.format("%s:%d:%d:%s", file, line, col, symbol or "")
+  local file = M.get_file_path(bufnr)
+  return string.format("%s:%d:%d:%s", file, line, col, word or "")
 end
 
 -- Create LSP position parameters for any position
@@ -71,72 +61,25 @@ function M.make_lsp_position_params(bufnr, line, col)
   }
 end
 
+-- Get visible line range for window
 function M.get_visible_lines(winnr)
   winnr = winnr or 0
   return {
-    top     = vim.fn.line('w0', winnr),
-    bottom  = vim.fn.line('w$', winnr),
+    top = vim.fn.line('w0', winnr),
+    bottom = vim.fn.line('w$', winnr)
   }
 end
 
 -- Expand visible range for prefetching
 function M.get_prefetch_range(bufnr, win)
-  local visible = M.get_visible_range(bufnr, win)
+  local visible = M.get_visible_lines(win)
   if not visible then
     return nil
   end
   return {
-    start_line = math.max(1, visible.start_line - 30),
-    end_line = visible.end_line + 30,
+    start_line = math.max(1, visible.top - 30),
+    end_line = visible.bottom + 30,
   }
-end
-
--- Check if buffer is valid for LSP operations
-function M.is_valid_buffer(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-
-  -- Check if buffer exists and is loaded
-  if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
-    return false
-  end
-
-  -- Check buffer type
-  local buftype = vim.api.nvim_get_option_value('buftype', { buf = bufnr })
-  if buftype ~= '' then
-    return false
-  end
-
-  -- Check if file exists
-  local file_path = M.get_file_path(bufnr)
-  if not file_path or file_path == '' then
-    return false
-  end
-
-  return true
-end
-
--- Check if filetype should be excluded
-function M.should_exclude_filetype()
-  return false
-end
-
--- Check if buffer has LSP clients
-function M.has_lsp_clients(bufnr)
-  bufnr = bufnr or 0
-  return #vim.lsp.get_clients({ bufnr = bufnr }) > 0
-end
-
-function M.get_lsp_clients(bufnr)
-  bufnr = bufnr or 0
-  return vim.lsp.get_clients({ bufnr = bufnr })
-end
-
-function M.is_suitable_for_lsp(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-
-  return M.is_valid_buffer(bufnr) and
-      not M.should_exclude_filetype() and
-      M.has_lsp_clients(bufnr)
 end
 
 -- Location info utilities

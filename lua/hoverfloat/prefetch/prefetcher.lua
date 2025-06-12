@@ -1,8 +1,10 @@
--- lua/hoverfloat/prefetch/prefetcher.lua - Hardcoded background LSP prefetching
+-- lua/hoverfloat/prefetch/prefetcher.lua - Updated with symbol utilities
 local M = {}
 local lsp_service = require('hoverfloat.core.lsp_service')
 local cache = require('hoverfloat.prefetch.cache')
 local position = require('hoverfloat.core.position')
+local buffer = require('hoverfloat.utils.buffer')
+local symbols = require('hoverfloat.utils.symbols')
 local performance = require('hoverfloat.core.performance')
 local logger = require('hoverfloat.utils.logger')
 
@@ -19,7 +21,7 @@ local state = {
 
 -- Get symbols in the prefetch range for a buffer
 local function get_prefetchable_symbols(bufnr)
-  local symbols = state.buffer_symbols[bufnr] or {}
+  local buffer_symbols = state.buffer_symbols[bufnr] or {}
   local prefetch_range = position.get_prefetch_range(bufnr, PREFETCH_RADIUS_LINES)
 
   if not prefetch_range then
@@ -27,14 +29,16 @@ local function get_prefetchable_symbols(bufnr)
   end
 
   local visible_symbols = {}
-  for _, symbol in ipairs(symbols) do
+  for _, symbol in ipairs(buffer_symbols) do
     if symbol.start_line <= prefetch_range.end_line and
         symbol.end_line >= prefetch_range.start_line then
       table.insert(visible_symbols, symbol)
     end
   end
 
-  return visible_symbols
+  -- Filter and sort by priority
+  local filterable = vim.tbl_filter(symbols.should_prefetch_symbol, visible_symbols)
+  return symbols.sort_symbols_by_priority(filterable)
 end
 
 -- Check if symbol is already being prefetched
@@ -117,9 +121,9 @@ end
 
 -- Queue symbols for prefetching
 local function queue_symbols_for_prefetch(bufnr)
-  local symbols = get_prefetchable_symbols(bufnr)
+  local prefetchable_symbols = get_prefetchable_symbols(bufnr)
 
-  for _, symbol in ipairs(symbols) do
+  for _, symbol in ipairs(prefetchable_symbols) do
     if not cache.has_cached_data(bufnr, symbol.start_line, symbol.name) and
         not is_prefetch_in_progress(bufnr, symbol) then
       table.insert(state.prefetch_queue, { bufnr = bufnr, symbol = symbol })
@@ -131,16 +135,16 @@ end
 
 -- Get instant context data if available in cache
 function M.get_instant_context_data(callback)
-  local symbol = position.get_symbol_at_cursor()
-  if not symbol then
+  local symbol_info = symbols.get_symbol_at_cursor()
+  if not symbol_info or not symbols.is_cacheable_symbol_position() then
     callback(nil)
     return
   end
 
-  local cached_data = cache.get(symbol.bufnr, symbol.line, symbol.word)
+  local cached_data = cache.get(symbol_info.bufnr, symbol_info.line, symbol_info.word)
 
   if cached_data then
-    local current_pos = position.get_current_position()
+    local current_pos = position.get_current_context()
     local formatted_data = cache.format_for_socket(cached_data, current_pos)
     callback(formatted_data)
     return
@@ -151,13 +155,17 @@ end
 
 -- Update document symbols for buffer
 local function update_buffer_symbols(bufnr)
-  if not position.is_suitable_for_lsp(bufnr) then
+  if not buffer.is_suitable_for_lsp(bufnr) then
     return
   end
 
-  lsp_service.get_document_symbols(bufnr, function(symbols, err)
-    if not err and symbols then
-      state.buffer_symbols[bufnr] = symbols
+  lsp_service.get_document_symbols(bufnr, function(symbol_list, err)
+    if not err and symbol_list then
+      -- Clean and validate symbols
+      local cleaned_symbols = symbols.clean_symbols(symbol_list)
+      state.buffer_symbols[bufnr] = cleaned_symbols
+
+      logger.debug("Prefetcher", string.format("Updated symbols for buffer %d: %d symbols", bufnr, #cleaned_symbols))
 
       vim.defer_fn(function()
         queue_symbols_for_prefetch(bufnr)
@@ -187,7 +195,7 @@ function M.setup()
     group = group,
     callback = function()
       local bufnr = vim.api.nvim_get_current_buf()
-      if position.is_suitable_for_lsp(bufnr) then
+      if buffer.is_suitable_for_lsp(bufnr) then
         update_buffer_symbols(bufnr)
       end
     end,
@@ -197,7 +205,7 @@ function M.setup()
     group = group,
     callback = function()
       local bufnr = vim.api.nvim_get_current_buf()
-      if position.is_suitable_for_lsp(bufnr) then
+      if buffer.is_suitable_for_lsp(bufnr) then
         queue_symbols_for_prefetch(bufnr)
       end
     end,
@@ -246,6 +254,16 @@ function M.get_stats()
     in_progress = vim.tbl_count(state.prefetch_in_progress),
     cache_stats = cache_stats,
   }
+end
+
+-- Debug functions
+function M.get_buffer_symbols(bufnr)
+  return state.buffer_symbols[bufnr] or {}
+end
+
+function M.get_symbol_summary(bufnr)
+  local buffer_symbols = M.get_buffer_symbols(bufnr)
+  return symbols.get_symbol_summary(buffer_symbols)
 end
 
 return M
