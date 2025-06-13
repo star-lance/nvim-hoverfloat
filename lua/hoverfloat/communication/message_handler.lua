@@ -16,6 +16,19 @@ function M.create_context_update(context_data)
   return M.create_message("context_update", context_data)
 end
 
+-- Fast binary cursor update for position-only changes (guide.md optimization)
+function M.create_fast_cursor_update(file, line, col)
+  -- For high-frequency cursor updates, use compact format
+  -- Still JSON for compatibility, but minimal data
+  local compact_data = {
+    f = file,       -- shorter keys reduce size
+    l = line,
+    c = col,
+    t = vim.uv.now()
+  }
+  return M.create_message("cursor_pos", compact_data)
+end
+
 function M.create_error_message(error_text, details)
   return M.create_message("error", {
     error = error_text,
@@ -44,8 +57,9 @@ end
 local function is_valid_message_type(msg_type)
   local valid_types = {
     "context_update",
+    "cursor_pos",    -- Fast cursor position updates
     "ping",
-    "pong",
+    "pong", 
     "error",
     "status",
     "disconnect"

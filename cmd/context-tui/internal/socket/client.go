@@ -218,6 +218,7 @@ func CreateDisconnectMessage(reason string) (*Message, error) {
 // Message type constants
 const (
 	MessageTypeContextUpdate = "context_update"
+	MessageTypeCursorPos     = "cursor_pos"     // Fast cursor position updates
 	MessageTypePing          = "ping"
 	MessageTypePong          = "pong"
 	MessageTypeError         = "error"
@@ -229,6 +230,7 @@ const (
 func IsValidMessageType(msgType string) bool {
 	switch msgType {
 	case MessageTypeContextUpdate,
+		MessageTypeCursorPos,
 		MessageTypePing,
 		MessageTypePong,
 		MessageTypeError,

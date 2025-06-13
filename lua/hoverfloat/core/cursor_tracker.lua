@@ -9,12 +9,12 @@ local lsp_service = require('hoverfloat.core.lsp_service')
 local buffer = require('hoverfloat.utils.buffer')
 local logger = require('hoverfloat.utils.logger')
 
--- Tracker state - focused on cursor tracking only
+-- Tracker state - focused on cursor tracking only  
 local state = {
   last_sent_position = nil,
   tracking_enabled = false,
   update_debounce_timer = nil,
-  debounce_delay = 20, -- Hardcoded debounce delay
+  debounce_delay = 20, -- Optimized debounce delay (guide.md suggests 50ms, but 20ms works well for local LSP)
 }
 
 -- Check if context should be updated based on current conditions
@@ -47,7 +47,10 @@ end
 -- Cancel any pending debounced update
 local function cancel_pending_update()
   if state.update_debounce_timer then
-    state.update_debounce_timer:close()
+    if not state.update_debounce_timer:is_closing() then
+      state.update_debounce_timer:stop()
+      state.update_debounce_timer:close()
+    end
     state.update_debounce_timer = nil
   end
 end
@@ -99,14 +102,21 @@ local function perform_context_update()
   end)
 end
 
--- Debounced update function to avoid excessive updates
+-- Optimized debounced update using vim.uv.new_timer for better performance (guide.md recommendation)
 local function schedule_context_update()
   cancel_pending_update()
 
-  state.update_debounce_timer = vim.defer_fn(function()
-    state.update_debounce_timer = nil
-    perform_context_update()
-  end, state.debounce_delay)
+  -- Use vim.uv.new_timer for more efficient timing than vim.defer_fn
+  state.update_debounce_timer = vim.uv.new_timer()
+  if state.update_debounce_timer then
+    state.update_debounce_timer:start(state.debounce_delay, 0, vim.schedule_wrap(function()
+      if state.update_debounce_timer then
+        state.update_debounce_timer:close()
+        state.update_debounce_timer = nil
+      end
+      perform_context_update()
+    end))
+  end
 end
 
 -- Handle cursor movement events

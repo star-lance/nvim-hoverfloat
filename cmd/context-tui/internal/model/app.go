@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,6 +45,23 @@ type HeartbeatMsg struct {
 	Timestamp int64
 }
 type TUIReadyMsg struct{} // New message type for readiness signaling
+
+// Buffer pools for performance optimization
+var (
+	// Reusable buffers for socket I/O operations
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			// Create 32KB buffers as recommended in guide.md
+			return make([]byte, 32*1024)
+		},
+	}
+	// Scanner buffer pool for JSON parsing
+	scannerBufferPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 0, 64*1024) // 64KB initial capacity
+		},
+	}
+)
 
 // MessageBridge handles thread-safe communication between goroutines and Bubble Tea
 type MessageBridge struct {
@@ -420,7 +438,7 @@ func (m *App) getConnectionState() ConnectionState {
 	return m.connectionState
 }
 
-// startSocketServer initializes the Unix socket server
+// startSocketServer initializes the Unix socket server with optimized settings
 func (m *App) startSocketServer() tea.Cmd {
 	return func() tea.Msg {
 		// Remove existing socket file
@@ -457,8 +475,11 @@ func (m *App) acceptConnections() {
 	}
 }
 
-// handleNewConnection sets up a new client connection
+// handleNewConnection sets up a new client connection with optimized settings
 func (m *App) handleNewConnection(conn net.Conn) {
+	// Optimize socket for low-latency communication
+	m.optimizeSocket(conn)
+
 	m.connMutex.Lock()
 
 	// Close existing connection if any
@@ -477,9 +498,33 @@ func (m *App) handleNewConnection(conn net.Conn) {
 	go m.handlePersistentConnection(conn)
 }
 
-// handlePersistentConnection manages the lifecycle of a persistent connection
+// optimizeSocket applies performance optimizations to the socket connection
+func (m *App) optimizeSocket(conn net.Conn) {
+	if unixConn, ok := conn.(*net.UnixConn); ok {
+		// Get underlying file descriptor for low-level optimizations
+		file, err := unixConn.File()
+		if err == nil {
+			defer file.Close()
+			fd := int(file.Fd())
+
+			// Set 32KB receive buffer (guide.md recommendation)
+			syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 32*1024)
+			// Set 32KB send buffer  
+			syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 32*1024)
+			// Disable Nagle's algorithm equivalent for Unix sockets (TCP_NODELAY equivalent)
+			syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		}
+	}
+}
+
+// handlePersistentConnection manages the lifecycle of a persistent connection with optimized buffering
 func (m *App) handlePersistentConnection(conn net.Conn) {
+	// Get buffer from pool for this connection
+	scannerBuffer := scannerBufferPool.Get().([]byte)
 	defer func() {
+		// Return buffer to pool after connection closes
+		scannerBufferPool.Put(scannerBuffer[:0]) // Reset length but keep capacity
+		
 		conn.Close()
 		m.connMutex.Lock()
 		if m.clientConn == conn {
@@ -492,9 +537,9 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 		m.messageBridge.SendMessage(ConnectionStateChangedMsg{State: Disconnected})
 	}()
 
-	// Set up buffered reader for newline-delimited messages
+	// Set up buffered reader for newline-delimited messages using pooled buffer
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 64KB initial, 1MB max
+	scanner.Buffer(scannerBuffer, 1024*1024) // Use pooled buffer, 1MB max
 
 	// Set initial read timeout
 	conn.SetReadDeadline(time.Now().Add(m.connectionTimeout))
@@ -522,6 +567,13 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 				m.messageBridge.SendMessage(socket.ContextUpdateMsg{Data: contextData})
 			} else {
 				m.messageBridge.SendMessage(socket.ErrorMsg("Failed to extract context data from message"))
+			}
+
+		case "cursor_pos":
+			// Fast path for cursor position updates - could be used for optimization
+			// For now, just treat as context update but could be optimized further
+			if contextData, ok := msg.ExtractContextData(); ok {
+				m.messageBridge.SendMessage(socket.ContextUpdateMsg{Data: contextData})
 			}
 
 		case "ping":

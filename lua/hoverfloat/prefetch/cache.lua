@@ -52,7 +52,7 @@ end
 -- CORE CACHE OPERATIONS
 --==============================================================================
 
--- Store LSP data in cache
+-- Store LSP data in cache with deduplication check
 function M.store(bufnr, line, word, lsp_data)
   local buffer_version = vim.api.nvim_buf_get_changedtick(bufnr)
   local cache_key = get_cache_key(bufnr, line, word)
@@ -64,6 +64,13 @@ function M.store(bufnr, line, word, lsp_data)
 
   -- Check if this is a new entry
   local is_new_entry = symbol_cache[bufnr][cache_key] == nil
+  
+  -- Quick deduplication - don't cache identical data
+  local existing_entry = symbol_cache[bufnr][cache_key]
+  if existing_entry and existing_entry.buffer_version == buffer_version then
+    -- Data likely hasn't changed, skip expensive cache update
+    return
+  end
 
   -- Store cache entry
   symbol_cache[bufnr][cache_key] = create_cache_entry(lsp_data, buffer_version)
