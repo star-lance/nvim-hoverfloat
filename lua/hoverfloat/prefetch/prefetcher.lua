@@ -20,9 +20,8 @@ local DEFAULT_FEATURE_CONFIG = {
   max_references = 8,
 }
 
--- Prefetcher state
+-- Prefetcher state (symbols moved to symbols.lua)
 local state = {
-  buffer_symbols = {}, -- [bufnr] = symbols_array
   prefetch_queue = {},
   prefetch_in_progress = {},
 }
@@ -33,21 +32,14 @@ local state = {
 
 -- Get symbols in the prefetch range for a buffer
 local function get_prefetchable_symbols(bufnr)
-  local buffer_symbols = state.buffer_symbols[bufnr] or {}
   local prefetch_range = position.get_prefetch_range(bufnr, PREFETCH_RADIUS_LINES)
-
   if not prefetch_range then
     return {}
   end
 
-  local visible_symbols = {}
-  for _, symbol in ipairs(buffer_symbols) do
-    if symbol.start_line <= prefetch_range.end_line and
-        symbol.end_line >= prefetch_range.start_line then
-      table.insert(visible_symbols, symbol)
-    end
-  end
-
+  -- Use symbols module to get symbols in range
+  local visible_symbols = symbols.get_symbols_in_range(bufnr, prefetch_range.start_line, prefetch_range.end_line)
+  
   -- Filter and sort by priority
   local filterable = vim.tbl_filter(symbols.should_prefetch_symbol, visible_symbols)
   return symbols.sort_symbols_by_priority(filterable)
@@ -145,33 +137,12 @@ local function queue_symbols_for_prefetch(bufnr)
 end
 
 --==============================================================================
--- SYMBOL MANAGEMENT
+-- BUFFER DATA MANAGEMENT  
 --==============================================================================
 
--- Update document symbols for buffer
-local function update_buffer_symbols(bufnr)
-  if not buffer.is_suitable_for_lsp(bufnr) then
-    return
-  end
-
-  lsp_service.get_document_symbols(bufnr, function(symbol_list, err)
-    if not err and symbol_list then
-      -- Clean and validate symbols
-      local cleaned_symbols = symbols.clean_symbols(symbol_list)
-      state.buffer_symbols[bufnr] = cleaned_symbols
-
-      logger.debug("Prefetcher", string.format("Updated symbols for buffer %d: %d symbols", bufnr, #cleaned_symbols))
-
-      vim.defer_fn(function()
-        queue_symbols_for_prefetch(bufnr)
-      end, SYMBOL_UPDATE_DELAY_MS)
-    end
-  end)
-end
-
--- Clear buffer-specific data
+-- Clear buffer-specific prefetch data
 local function clear_buffer_data(bufnr)
-  state.buffer_symbols[bufnr] = nil
+  symbols.clear_buffer_symbols(bufnr)
   cache.clear_buffer(bufnr)
 
   local file_path = position.get_file_path(bufnr)
@@ -180,6 +151,17 @@ local function clear_buffer_data(bufnr)
       state.prefetch_in_progress[cache_key] = nil
     end
   end
+end
+
+-- Update symbols and trigger prefetch
+local function update_symbols_and_prefetch(bufnr)
+  symbols.update_buffer_symbols(bufnr, function(success, result)
+    if success then
+      vim.defer_fn(function()
+        queue_symbols_for_prefetch(bufnr)
+      end, SYMBOL_UPDATE_DELAY_MS)
+    end
+  end)
 end
 
 --==============================================================================
@@ -195,7 +177,7 @@ function M.setup()
     callback = function()
       local bufnr = vim.api.nvim_get_current_buf()
       if buffer.is_suitable_for_lsp(bufnr) then
-        update_buffer_symbols(bufnr)
+        update_symbols_and_prefetch(bufnr)
       end
     end,
   })
@@ -215,7 +197,7 @@ function M.setup()
     callback = function()
       local bufnr = vim.api.nvim_get_current_buf()
       clear_buffer_data(bufnr)
-      update_buffer_symbols(bufnr)
+      update_symbols_and_prefetch(bufnr)
     end,
   })
 
@@ -236,7 +218,7 @@ end
 --==============================================================================
 function M.force_prefetch_current_buffer()
   local bufnr = vim.api.nvim_get_current_buf()
-  update_buffer_symbols(bufnr)
+  update_symbols_and_prefetch(bufnr)
 end
 
 function M.clear_cache()
@@ -261,11 +243,11 @@ end
 -- DEBUG FUNCTIONS
 --==============================================================================
 function M.get_buffer_symbols(bufnr)
-  return state.buffer_symbols[bufnr] or {}
+  return symbols.get_buffer_symbols(bufnr)
 end
 
 function M.get_symbol_summary(bufnr)
-  local buffer_symbols = M.get_buffer_symbols(bufnr)
+  local buffer_symbols = symbols.get_buffer_symbols(bufnr)
   return symbols.get_symbol_summary(buffer_symbols)
 end
 

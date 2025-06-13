@@ -358,4 +358,83 @@ function M.is_cacheable_symbol_position()
   return not skip_keywords[info.word:lower()]
 end
 
+--==============================================================================
+-- BUFFER SYMBOL MANAGEMENT
+--==============================================================================
+
+-- State for buffer symbols
+local buffer_symbols_state = {
+  buffer_symbols = {}, -- [bufnr] = symbols_array
+}
+
+-- Get document symbols for buffer and cache them
+function M.get_buffer_symbols(bufnr, force_refresh)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  -- Return cached if available and not forcing refresh
+  if not force_refresh and buffer_symbols_state.buffer_symbols[bufnr] then
+    return buffer_symbols_state.buffer_symbols[bufnr]
+  end
+  
+  -- Return empty array if no cached symbols and not forcing refresh
+  return buffer_symbols_state.buffer_symbols[bufnr] or {}
+end
+
+-- Update document symbols for buffer
+function M.update_buffer_symbols(bufnr, callback)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  
+  local buffer = require('hoverfloat.utils.buffer')
+  if not buffer.is_suitable_for_lsp(bufnr) then
+    if callback then callback(false, "Buffer not suitable for LSP") end
+    return
+  end
+
+  local lsp_service = require('hoverfloat.core.lsp_service')
+  lsp_service.get_document_symbols(bufnr, function(symbol_list, err)
+    if not err and symbol_list then
+      -- Clean and validate symbols
+      local cleaned_symbols = M.clean_symbols(symbol_list)
+      buffer_symbols_state.buffer_symbols[bufnr] = cleaned_symbols
+      
+      local logger = require('hoverfloat.utils.logger')
+      logger.debug("Symbols", string.format("Updated symbols for buffer %d: %d symbols", bufnr, #cleaned_symbols))
+      
+      if callback then callback(true, cleaned_symbols) end
+    else
+      if callback then callback(false, err) end
+    end
+  end)
+end
+
+-- Clear buffer symbols
+function M.clear_buffer_symbols(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  buffer_symbols_state.buffer_symbols[bufnr] = nil
+end
+
+-- Clear all buffer symbols
+function M.clear_all_buffer_symbols()
+  buffer_symbols_state.buffer_symbols = {}
+end
+
+-- Get symbols in a specific line range
+function M.get_symbols_in_range(bufnr, start_line, end_line)
+  local symbols = M.get_buffer_symbols(bufnr)
+  return M.filter_symbols_by_range(symbols, start_line, end_line)
+end
+
+-- Check if buffer has symbols cached
+function M.has_cached_symbols(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local symbols = buffer_symbols_state.buffer_symbols[bufnr]
+  return symbols ~= nil and #symbols > 0
+end
+
+-- Get symbol count for buffer
+function M.get_symbol_count(bufnr)
+  local symbols = M.get_buffer_symbols(bufnr)
+  return #symbols
+end
+
 return M
