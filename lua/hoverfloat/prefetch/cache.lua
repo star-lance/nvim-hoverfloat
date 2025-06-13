@@ -5,12 +5,12 @@ local symbols = require('hoverfloat.utils.symbols')
 local performance = require('hoverfloat.core.performance')
 
 -- Cache configuration
-local CACHE_TTL_MS = 45000  -- 45 seconds
+local CACHE_TTL_MS = 45000        -- 45 seconds
 local MAX_CACHE_ENTRIES = 1000
-local CLEANUP_INTERVAL_MS = 60000  -- 1 minute
+local CLEANUP_INTERVAL_MS = 60000 -- 1 minute
 
--- Cache storage: [buffer_id][symbol_key] = cache_entry
 local symbol_cache = {}
+local cache_count = 0
 
 -- Cache entry structure
 local function create_cache_entry(lsp_data, buffer_version)
@@ -62,11 +62,19 @@ function M.store(bufnr, line, word, lsp_data)
     symbol_cache[bufnr] = {}
   end
 
+  -- Check if this is a new entry
+  local is_new_entry = symbol_cache[bufnr][cache_key] == nil
+
   -- Store cache entry
   symbol_cache[bufnr][cache_key] = create_cache_entry(lsp_data, buffer_version)
 
+  -- Update count if new entry
+  if is_new_entry then
+    cache_count = cache_count + 1
+  end
+
   -- Update performance stats
-  performance.update_prefetch_stats(M.get_total_cached_symbols())
+  performance.update_prefetch_stats(cache_count)
 end
 
 -- Retrieve LSP data from cache
@@ -81,8 +89,9 @@ function M.get(bufnr, line, word)
 
   local cache_entry = buffer_cache[cache_key]
   if not is_cache_valid(cache_entry, buffer_version, CACHE_TTL_MS) then
-    -- Remove invalid entry
+    -- Remove invalid entry and update count
     buffer_cache[cache_key] = nil
+    cache_count = cache_count - 1
     return nil
   end
 
@@ -103,18 +112,24 @@ end
 
 -- Clear cache for specific buffer
 function M.clear_buffer(bufnr)
-  symbol_cache[bufnr] = nil
+  if symbol_cache[bufnr] then
+    -- Count entries being removed
+    for _ in pairs(symbol_cache[bufnr]) do
+      cache_count = cache_count - 1
+    end
+    symbol_cache[bufnr] = nil
+  end
 end
 
 -- Clear entire cache
 function M.clear_all()
   symbol_cache = {}
-  performance.update_prefetch_stats(0) -- Reset cached symbols count
+  cache_count = 0
+  performance.update_prefetch_stats(0)
 end
 
 -- Clear expired entries from cache
 function M.cleanup_expired()
-  local now = vim.uv.now()
   local cleaned_count = 0
 
   for bufnr, buffer_cache in pairs(symbol_cache) do
@@ -133,8 +148,10 @@ function M.cleanup_expired()
     end
   end
 
+  -- Update global count
+  cache_count = cache_count - cleaned_count
   if cleaned_count > 0 then
-    performance.update_prefetch_stats(M.get_total_cached_symbols())
+    performance.update_prefetch_stats(cache_count)
   end
 
   return cleaned_count
@@ -144,15 +161,9 @@ end
 -- CACHE STATISTICS
 --==============================================================================
 
--- Get total number of cached symbols
+-- Get total number of cached symbols (O(1) operation)
 function M.get_total_cached_symbols()
-  local total = 0
-  for _, buffer_cache in pairs(symbol_cache) do
-    for _ in pairs(buffer_cache) do
-      total = total + 1
-    end
-  end
-  return total
+  return cache_count
 end
 
 -- Get cache statistics
@@ -191,37 +202,37 @@ end
 function M.prune_cache(max_entries)
   max_entries = max_entries or MAX_CACHE_ENTRIES
 
-  local current_total = M.get_total_cached_symbols()
-  if current_total <= max_entries then
+  if cache_count <= max_entries then
     return 0 -- No pruning needed
   end
 
-  -- Collect all entries with timestamps
-  local all_entries = {}
+  -- Simple pruning: remove oldest entries until under limit
+  local to_remove = cache_count - max_entries
+  local removed_count = 0
+  local oldest_timestamp = math.huge
+
+  -- Find oldest timestamp threshold by sampling
   for bufnr, buffer_cache in pairs(symbol_cache) do
-    for cache_key, cache_entry in pairs(buffer_cache) do
-      table.insert(all_entries, {
-        bufnr = bufnr,
-        cache_key = cache_key,
-        timestamp = cache_entry.timestamp,
-      })
+    for _, cache_entry in pairs(buffer_cache) do
+      if cache_entry.timestamp < oldest_timestamp then
+        oldest_timestamp = cache_entry.timestamp
+      end
     end
   end
 
-  -- Sort by timestamp (oldest first)
-  table.sort(all_entries, function(a, b)
-    return a.timestamp < b.timestamp
-  end)
-
-  -- Remove oldest entries
-  local to_remove = current_total - max_entries
-  local removed_count = 0
-
-  for i = 1, math.min(to_remove, #all_entries) do
-    local entry = all_entries[i]
-    if symbol_cache[entry.bufnr] and symbol_cache[entry.bufnr][entry.cache_key] then
-      symbol_cache[entry.bufnr][entry.cache_key] = nil
-      removed_count = removed_count + 1
+  -- Remove entries older than threshold
+  for bufnr, buffer_cache in pairs(symbol_cache) do
+    for cache_key, cache_entry in pairs(buffer_cache) do
+      if removed_count >= to_remove then
+        break
+      end
+      if cache_entry.timestamp <= oldest_timestamp then
+        buffer_cache[cache_key] = nil
+        removed_count = removed_count + 1
+      end
+    end
+    if removed_count >= to_remove then
+      break
     end
   end
 
@@ -232,7 +243,9 @@ function M.prune_cache(max_entries)
     end
   end
 
-  performance.update_prefetch_stats(M.get_total_cached_symbols())
+  -- Update global count
+  cache_count = cache_count - removed_count
+  performance.update_prefetch_stats(cache_count)
   return removed_count
 end
 
@@ -245,23 +258,23 @@ function M.get_cursor_data()
   if not symbols.is_cacheable_symbol_position() then
     return nil
   end
-  
+
   local symbol_info = symbols.get_symbol_info_at_cursor()
   if not symbol_info or symbol_info.is_empty then
     return nil
   end
-  
+
   -- Try exact word match first
   local cached_data = M.get(symbol_info.bufnr, symbol_info.line, symbol_info.word)
   if cached_data then
     return cached_data
   end
-  
+
   -- If word has special characters, try WORD as fallback
   if symbol_info.has_special and symbol_info.WORD ~= symbol_info.word then
     return M.get(symbol_info.bufnr, symbol_info.line, symbol_info.WORD)
   end
-  
+
   return nil
 end
 
@@ -288,7 +301,7 @@ end
 
 -- Setup automatic cleanup
 function M.setup_auto_cleanup()
-  local timer = vim.loop.new_timer()
+  local timer = vim.loop.new_timer() or {}
   timer:start(CLEANUP_INTERVAL_MS, CLEANUP_INTERVAL_MS, vim.schedule_wrap(function()
     M.cleanup_expired()
     M.prune_cache()

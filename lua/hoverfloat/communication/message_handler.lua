@@ -110,9 +110,15 @@ function MessageQueue:add(message)
   -- Add to queue
   table.insert(self.queue, message)
 
-  -- Enforce size limit
-  while #self.queue > self.max_size do
-    table.remove(self.queue, 1) -- Remove oldest
+  -- Enforce size limit using more efficient approach
+  if #self.queue > self.max_size then
+    -- Replace old queue with trimmed version (O(n) once vs O(n²))
+    local new_queue = {}
+    local start_idx = #self.queue - self.max_size + 1
+    for i = start_idx, #self.queue do
+      table.insert(new_queue, self.queue[i])
+    end
+    self.queue = new_queue
   end
 end
 

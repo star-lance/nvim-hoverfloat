@@ -35,6 +35,16 @@ const (
 	Reconnecting
 )
 
+// Custom message types
+type ContinuePollingMsg struct{}
+type ConnectionStateChangedMsg struct {
+	State ConnectionState
+}
+type HeartbeatMsg struct {
+	Timestamp int64
+}
+type TUIReadyMsg struct{} // New message type for readiness signaling
+
 // MessageBridge handles thread-safe communication between goroutines and Bubble Tea
 type MessageBridge struct {
 	messages chan tea.Msg
@@ -74,15 +84,6 @@ func (mb *MessageBridge) CheckMessages() tea.Cmd {
 	}
 }
 
-// Custom message types
-type ContinuePollingMsg struct{}
-type ConnectionStateChangedMsg struct {
-	State ConnectionState
-}
-type HeartbeatMsg struct {
-	Timestamp int64
-}
-
 // App represents the main application model
 type App struct {
 	// Display state
@@ -111,6 +112,10 @@ type App struct {
 	messageBridge     *MessageBridge
 	heartbeatTimer    *time.Timer
 	connectionTimeout time.Duration
+
+	// Readiness signaling
+	readinessSignaled bool
+	readinessMutex    sync.Mutex
 
 	// Styles
 	styles *styles.Styles
@@ -163,6 +168,7 @@ func NewApp(socketPath string) *App {
 		messageBridge:     NewMessageBridge(),
 		connectionState:   Disconnected,
 		connectionTimeout: 30 * time.Second,
+		readinessSignaled: false,
 	}
 }
 
@@ -173,6 +179,22 @@ func (m *App) Init() tea.Cmd {
 		tea.EnterAltScreen,
 		m.messageBridge.CheckMessages(),
 	)
+}
+
+// signalReadiness sends the readiness signal to stdout (called after socket setup)
+func (m *App) signalReadiness() {
+	m.readinessMutex.Lock()
+	defer m.readinessMutex.Unlock()
+
+	if m.readinessSignaled {
+		return // Already signaled
+	}
+
+	// Signal readiness to parent (Neovim) via stdout
+	fmt.Println("TUI_READY")
+	os.Stdout.Sync() // Ensure immediate flush
+
+	m.readinessSignaled = true
 }
 
 // Update handles messages and updates the model
@@ -200,6 +222,18 @@ func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ConnectionStateChangedMsg:
 		m.setConnectionState(msg.State)
+		
+		// Signal readiness when socket is ready and accepting connections
+		if msg.State == Connecting {
+			// Socket server is now ready - signal to parent
+			m.signalReadiness()
+		}
+		
+		return m, m.messageBridge.CheckMessages()
+
+	case TUIReadyMsg:
+		// Handle explicit readiness message if needed
+		m.signalReadiness()
 		return m, m.messageBridge.CheckMessages()
 
 	case HeartbeatMsg:
@@ -403,6 +437,7 @@ func (m *App) startSocketServer() tea.Cmd {
 		// Start accepting connections in background
 		go m.acceptConnections()
 
+		// Signal that socket server is ready for connections
 		return ConnectionStateChangedMsg{State: Connecting}
 	}
 }

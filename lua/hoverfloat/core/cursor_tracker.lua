@@ -14,28 +14,28 @@ local state = {
   last_sent_position = nil,
   tracking_enabled = false,
   update_debounce_timer = nil,
-  debounce_delay = 150, -- Hardcoded debounce delay
+  debounce_delay = 20, -- Hardcoded debounce delay
 }
 
 -- Check if context should be updated based on current conditions
 local function should_update_context()
   local bufnr = vim.api.nvim_get_current_buf()
-  
+
   -- Skip if tracking is disabled
   if not state.tracking_enabled then
     return false
   end
-  
+
   -- Skip if socket is not connected
   if not socket_client.is_connected() then
     return false
   end
-  
+
   -- Skip if buffer is not suitable for LSP
   if not buffer.is_suitable_for_lsp(bufnr) then
     return false
   end
-  
+
   return true
 end
 
@@ -70,27 +70,27 @@ local function perform_context_update()
   if cached_data then
     local current_pos = position.get_current_context()
     local formatted_data = cache.format_for_socket(cached_data, current_pos)
-    
+
     if formatted_data then
       local response_time = performance.complete_request(start_time, true, false)
       state.last_sent_position = current_position
       socket_client.send_context_update(formatted_data)
-      
+
       logger.debug("CursorTracker", string.format("Cache hit: %.2fμs", response_time))
       return
     end
   end
-  
+
   -- Cache miss - fallback to LSP
   local bufnr = vim.api.nvim_get_current_buf()
   local context = position.get_current_context()
-  
+
   lsp_service.gather_all_context(bufnr, context.line, context.col, nil, function(lsp_data)
     if lsp_data then
       local response_time = performance.complete_request(start_time, false, true)
       state.last_sent_position = current_position
       socket_client.send_context_update(lsp_data)
-      
+
       logger.debug("CursorTracker", string.format("LSP response: %.2fms", response_time))
     else
       performance.complete_request(start_time, false, false)
@@ -102,7 +102,7 @@ end
 -- Debounced update function to avoid excessive updates
 local function schedule_context_update()
   cancel_pending_update()
-  
+
   state.update_debounce_timer = vim.defer_fn(function()
     state.update_debounce_timer = nil
     perform_context_update()
@@ -162,7 +162,7 @@ end
 function M.enable()
   state.tracking_enabled = true
   logger.info("CursorTracker", "Cursor tracking enabled")
-  
+
   -- Trigger immediate update if conditions are met
   if socket_client.is_connected() then
     vim.defer_fn(perform_context_update, 100)
