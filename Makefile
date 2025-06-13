@@ -210,3 +210,45 @@ help:
 	@printf "$(CYAN)Utility:$(RESET)\n"
 	@echo "  status                 Show build and install status"
 	@echo "  help                   Show this help"
+
+# Test targets
+.PHONY: test test-unit test-integration test-setup test-smoke test-debug
+
+test-setup:
+	@printf "$(CYAN)Setting up test environment...$(RESET)\n"
+	@mkdir -p tests/sample_files
+	@chmod +x tests/run_tests.sh tests/debug_test.sh
+
+test-smoke: test-setup
+	@printf "$(BLUE)Running smoke test...$(RESET)\n"
+	@cd tests && nvim -l simple_runner.lua smoke_test.lua
+	@printf "$(GREEN)Smoke test passed$(RESET)\n"
+
+test-debug: test-setup
+	@printf "$(BLUE)Running test environment debug...$(RESET)\n"
+	@cd tests && ./debug_test.sh
+
+test-unit: test-smoke
+	@printf "$(BLUE)Running unit tests...$(RESET)\n"
+	@cd tests && nvim -l simple_runner.lua unit_tests.lua
+	@printf "$(GREEN)Unit tests passed$(RESET)\n"
+
+test-integration: test-smoke
+	@printf "$(BLUE)Running integration tests...$(RESET)\n"
+	@cd tests && nvim -l simple_runner.lua integration_tests.lua
+	@printf "$(GREEN)Integration tests passed$(RESET)\n"
+
+test: test-setup
+	@printf "$(BLUE)Running all tests...$(RESET)\n"
+	@cd tests && ./run_tests.sh
+	@printf "$(GREEN)All tests completed successfully$(RESET)\n"
+
+# Help text addition
+help:
+	# ... existing help content ...
+	@printf "$(CYAN)Testing:$(RESET)\n"
+	@echo "  test                   Run all tests"
+	@echo "  test-smoke             Run basic environment test"
+	@echo "  test-unit              Run unit tests only"
+	@echo "  test-integration       Run integration tests only"
+	@echo "  test-debug             Debug test environment issues"

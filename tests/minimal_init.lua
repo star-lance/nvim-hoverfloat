@@ -1,126 +1,65 @@
--- tests/minimal_init.lua - Minimal Test Environment with Plenary Only
+-- tests/minimal_init.lua - Completely isolated test environment
 
--- Disable ALL plugins first to ensure truly minimal environment
-vim.g.loaded_gzip = 1
-vim.g.loaded_zip = 1
-vim.g.loaded_zipPlugin = 1
-vim.g.loaded_tar = 1
-vim.g.loaded_tarPlugin = 1
-vim.g.loaded_getscript = 1
-vim.g.loaded_getscriptPlugin = 1
-vim.g.loaded_vimball = 1
-vim.g.loaded_vimballPlugin = 1
-vim.g.loaded_2html_plugin = 1
-vim.g.loaded_logiPat = 1
-vim.g.loaded_rrhelper = 1
+-- Completely disable user configuration
+vim.env.XDG_CONFIG_HOME = '/tmp/nvim_test_' .. os.time()
+vim.env.XDG_DATA_HOME = '/tmp/nvim_test_' .. os.time()
 vim.g.loaded_netrw = 1
 vim.g.loaded_netrwPlugin = 1
-vim.g.loaded_matchit = 1
-vim.g.loaded_matchparen = 1
-vim.g.loaded_spec = 1
 
--- Basic Neovim configuration for testing
+-- Disable all plugins and user configs
+vim.opt.loadplugins = false
+
+-- Basic essential settings
 vim.opt.swapfile = false
 vim.opt.backup = false
 vim.opt.undofile = false
 vim.opt.compatible = false
 
--- Essential settings for testing
-vim.cmd([[
-  filetype plugin indent on
-  syntax enable
-]])
+-- Clear runtime path and only add essentials
+local original_rtp = vim.opt.rtp:get()
+vim.opt.rtp = {}
 
--- Add our plugin to runtime path FIRST
+-- Add only Neovim's built-in runtime
+for _, path in ipairs(original_rtp) do
+  if path:match('/nvim/runtime$') or path:match('/nvim/runtime/pack') then
+    vim.opt.rtp:append(path)
+  end
+end
+
+-- Add our plugin to runtime path
 local plugin_path = vim.fn.expand("<sfile>:h:h")
 vim.opt.rtp:prepend(plugin_path)
 
--- Set up module loading for our plugin
-package.path = package.path .. ";" .. plugin_path .. "/lua/?.lua"
-package.path = package.path .. ";" .. plugin_path .. "/lua/?/init.lua"
-
--- Find and add plenary.nvim to runtime path
-local function find_and_add_plenary()
+-- Find and add plenary.nvim (only if it exists)
+local function find_plenary()
   local data_path = vim.fn.stdpath('data')
-  local possible_paths = {
-    data_path .. '/lazy/plenary.nvim',                      -- lazy.nvim
-    data_path .. '/site/pack/packer/start/plenary.nvim',    -- packer
-    data_path .. '/site/pack/packer/opt/plenary.nvim',      -- packer optional
-    data_path .. '/plugged/plenary.nvim',                   -- vim-plug
-    vim.fn.expand('~/.local/share/nvim/lazy/plenary.nvim'), -- explicit lazy path
+  local paths = {
+    data_path .. '/lazy/plenary.nvim',
+    data_path .. '/site/pack/packer/start/plenary.nvim',
+    data_path .. '/plugged/plenary.nvim',
+    vim.fn.expand('~/.local/share/nvim/lazy/plenary.nvim'),
   }
 
-  print("Searching for plenary.nvim...")
-  for _, path in ipairs(possible_paths) do
-    print("  Checking: " .. path)
+  for _, path in ipairs(paths) do
     if vim.fn.isdirectory(path) == 1 then
-      vim.opt.rtp:prepend(path) -- ADD PLENARY TO RUNTIME PATH
-      print("  ✓ Found and added plenary.nvim at: " .. path)
-      return path
+      vim.opt.rtp:prepend(path)
+      return true
     end
   end
-
-  -- Try with glob expansion for pack paths
-  print("  Checking with glob expansion...")
-  local glob_paths = vim.fn.glob(vim.fn.expand('~/.config/nvim/pack/*/start/plenary.nvim'), false, true)
-  for _, path in ipairs(glob_paths) do
-    print("  Checking glob result: " .. path)
-    if vim.fn.isdirectory(path) == 1 then
-      vim.opt.rtp:prepend(path) -- ADD PLENARY TO RUNTIME PATH
-      print("  ✓ Found and added plenary.nvim at: " .. path)
-      return path
-    end
-  end
-
-  return nil
+  return false
 end
 
--- Actually call the function to find and add plenary
-local plenary_path = find_and_add_plenary()
-
-if not plenary_path then
-  error([[
-❌ Plenary.nvim not found in any standard location!
-
-Searched in:
-  - ]] .. vim.fn.stdpath('data') .. [[/lazy/plenary.nvim (lazy.nvim)
-  - ]] .. vim.fn.stdpath('data') .. [[/site/pack/packer/start/plenary.nvim (packer)
-  - ]] .. vim.fn.stdpath('data') .. [[/plugged/plenary.nvim (vim-plug)
-  - ~/.config/nvim/pack/*/start/plenary.nvim (manual)
-
-Please ensure plenary.nvim is installed via your plugin manager.
-For lazy.nvim, add: { 'nvim-lua/plenary.nvim' }
-
-You can also check where plenary is installed with:
-  find ~/.local/share/nvim ~/.config/nvim -name "plenary.nvim" -type d 2>/dev/null
-  ]])
+if not find_plenary() then
+  error("plenary.nvim not found. Install it with: { 'nvim-lua/plenary.nvim' }")
 end
 
--- Load plenary and ensure it works
-print("Loading plenary.nvim...")
-local plenary_ok, plenary = pcall(require, 'plenary')
-if not plenary_ok then
-  error("❌ Failed to load plenary.nvim even though it was found at: " .. plenary_path .. "\nError: " .. tostring(plenary))
+-- Load plenary test framework and register commands
+local ok, plenary = pcall(require, 'plenary.busted')
+if not ok then
+  error("Failed to load plenary.busted: " .. tostring(plenary))
 end
 
--- Load plenary's busted test framework
-print("Loading plenary.busted...")
-local busted_ok, busted_error = pcall(require, 'plenary.busted')
-if not busted_ok then
-  error("❌ Failed to load plenary.busted - plenary.nvim installation may be incomplete\nError: " ..
-  tostring(busted_error))
-end
+-- Ensure the command is registered
+vim.cmd([[command! -nargs=1 PlenaryBustedFile lua require('plenary.busted').run(<f-args>)]])
 
--- Set up test-specific environment variables
-vim.env.TMPDIR = vim.env.TMPDIR or '/tmp'
-vim.env.XDG_RUNTIME_DIR = vim.env.XDG_RUNTIME_DIR or '/tmp'
-
--- Ensure /tmp is writable for test files
-if vim.fn.filewritable('/tmp') == 0 then
-  error("❌ Cannot write to /tmp directory - required for testing")
-end
-
-print("✅ Minimal test environment initialized")
-print("✅ Plenary.nvim loaded from: " .. plenary_path)
-print("✅ Plugin loaded from: " .. plugin_path)
-print("✅ Ready to run tests!")
+print("✅ Isolated test environment ready")
