@@ -1,137 +1,68 @@
 #!/bin/bash
-# tests/run_tests.sh - Simple test runner
+# tests/run_tests.sh - Simple wrapper for real tests (replaces the old complex version)
 
 set -e
 
+# Colors for output - consistent with other scripts
+RED='\033[31m'
+GREEN='\033[32m'
+BLUE='\033[34m'
+CYAN='\033[36m'
+RESET='\033[0m'
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Make debug script executable
-chmod +x "$SCRIPT_DIR/debug_test.sh" 2>/dev/null || true
-
-echo "🧪 Running nvim-hoverfloat tests..."
-
-# Run smoke test first
-echo "💨 Running smoke test..."
-nvim --headless --noplugin \
-  -u "$SCRIPT_DIR/minimal_init.lua" \
-  -c "PlenaryBustedFile $SCRIPT_DIR/smoke_test.lua" \
-  -c "qa!"
-
-echo "✅ Smoke test passed"
-
-# Create sample files directory and files
-mkdir -p "$SCRIPT_DIR/sample_files"
-
-# Create the sample Lua file
-cat > "$SCRIPT_DIR/sample_files/test_file.lua" << 'EOF'
--- Sample Lua file for LSP testing
-local M = {}
-
-local VERSION = "1.0.0"
-
-local function calculate_sum(a, b)
-    return a + b
-end
-
-function M.add_numbers(x, y)
-    local result = calculate_sum(x, y)
-    return result
-end
-
-local Calculator = {
-    value = 0
+print_status() {
+    local color=$1
+    local prefix=$2
+    local message=$3
+    printf '%s[%s]%s %s\n' "$color" "$prefix" "$RESET" "$message"
 }
 
-function Calculator:new()
-    local calc = setmetatable({}, { __index = Calculator })
-    calc.value = 0
-    return calc
-end
+print_info() { print_status "$BLUE" "INFO" "$1"; }
+print_success() { print_status "$GREEN" "SUCCESS" "$1"; }
+print_error() { print_status "$RED" "ERROR" "$1"; }
 
-M.Calculator = Calculator
+print_info "Running nvim-hoverfloat tests with real Neovim environment..."
+echo
 
-M.DEFAULT_CONFIG = {
-    timeout = 5000,
-    retry_count = 3,
-    debug = false
-}
+# Validate that the real test runner exists
+if [ ! -f "$SCRIPT_DIR/run_real_tests.sh" ]; then
+    print_error "Real test runner not found: $SCRIPT_DIR/run_real_tests.sh"
+    print_info "Expected file structure:"
+    print_info "  tests/"
+    print_info "    ├── run_tests.sh (this file)"
+    print_info "    ├── run_real_tests.sh (main runner)"
+    print_info "    ├── test_env.lua"
+    print_info "    └── real_*.lua (test files)"
+    exit 1
+fi
 
-function M.setup(user_config)
-    local config = vim.tbl_deep_extend('force', M.DEFAULT_CONFIG, user_config or {})
-    return config
-end
+# Make sure the real test runner is executable
+if [ ! -x "$SCRIPT_DIR/run_real_tests.sh" ]; then
+    print_info "Making run_real_tests.sh executable..."
+    chmod +x "$SCRIPT_DIR/run_real_tests.sh"
+    
+    if [ ! -x "$SCRIPT_DIR/run_real_tests.sh" ]; then
+        print_error "Failed to make run_real_tests.sh executable"
+        exit 1
+    fi
+fi
 
-return M
-EOF
-
-# Create the sample Go file
-cat > "$SCRIPT_DIR/sample_files/test_file.go" << 'EOF'
-package main
-
-import (
-	"fmt"
-	"time"
-)
-
-const (
-	DefaultTimeout = 30 * time.Second
-	MaxRetries     = 3
-)
-
-type Config struct {
-	Host    string        `json:"host"`
-	Port    int           `json:"port"`
-	Timeout time.Duration `json:"timeout"`
-}
-
-func (c *Config) GetAddress() string {
-	return fmt.Sprintf("%s:%d", c.Host, c.Port)
-}
-
-func NewConfig(host string, port int) *Config {
-	return &Config{
-		Host:    host,
-		Port:    port,
-		Timeout: DefaultTimeout,
-	}
-}
-
-var GlobalConfig = &Config{
-	Host:    "localhost",
-	Port:    8080,
-	Timeout: DefaultTimeout,
-}
-
-func GetServerAddress() string {
-	return GlobalConfig.GetAddress()
-}
-
-func main() {
-	config := NewConfig("localhost", 8080)
-	fmt.Printf("Server: %s\n", config.GetAddress())
-}
-EOF
-
-# Run unit tests
-echo "📝 Running unit tests..."
-nvim --headless --noplugin \
-  -u "$SCRIPT_DIR/minimal_init.lua" \
-  -c "PlenaryBustedFile $SCRIPT_DIR/unit_tests.lua" \
-  -c "qa!"
-
-echo "✅ Unit tests passed"
-
-# Run integration tests  
-echo "🔧 Running integration tests..."
-nvim --headless --noplugin \
-  -u "$SCRIPT_DIR/minimal_init.lua" \
-  -c "PlenaryBustedFile $SCRIPT_DIR/integration_tests.lua" \
-  -c "qa!"
-
-echo "✅ Integration tests passed"
-
-# Cleanup
-rm -rf "$SCRIPT_DIR/sample_files"
-
-echo "🎉 All tests passed!"
+# Run the real tests
+if "$SCRIPT_DIR/run_real_tests.sh"; then
+    echo
+    print_success "All tests completed successfully!"
+    echo
+    print_info "NOTE: These tests use a real Neovim environment instead of mocks."
+    print_info "For full LSP integration tests, ensure you have:"
+    print_info "  • lua-language-server (for Lua code analysis)"
+    print_info "  • gopls (for Go code analysis)"
+    exit 0
+else
+    local exit_code=$?
+    echo
+    print_error "Tests failed!"
+    print_info "Check the output above for error details"
+    exit $exit_code
+fi
