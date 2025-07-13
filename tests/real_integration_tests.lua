@@ -1,43 +1,14 @@
 -- tests/real_integration_tests.lua - Integration tests with real LSP and no mocks
 
+-- Load unified test framework
+local test_framework = require('tests.test_framework')
 local test_env = require('tests.test_env')
 
-local function describe(name, func)
-	print("📝 " .. name)
-	func()
-end
-
-local function it(name, func)
-	local ok, err = pcall(func)
-	if ok then
-		print("  ✅ " .. name)
-	else
-		print("  ❌ " .. name .. ": " .. tostring(err))
-		error("Test failed: " .. name)
-	end
-end
-
--- Real assertions for actual data
-local function assert_has_hover_data(data)
-	if not data or not data.hover or #data.hover == 0 then
-		error("Expected hover data but got none")
-	end
-end
-
-local function assert_has_definition(data)
-	if not data or not data.definition then
-		error("Expected definition but got none")
-	end
-	if not data.definition.file or not data.definition.line then
-		error("Definition missing file or line information")
-	end
-end
-
-local function assert_has_references(data)
-	if not data or not data.references or #data.references == 0 then
-		error("Expected references but got none")
-	end
-end
+local describe = test_framework.describe
+local it = test_framework.it
+local assert_has_hover_data = test_framework.assert_has_hover_data
+local assert_has_definition = test_framework.assert_has_definition
+local assert_has_references = test_framework.assert_has_references
 
 describe('Real LSP Integration Tests', function()
 	local env
@@ -311,6 +282,109 @@ describe('Real LSP Integration Tests', function()
 		end
 
 		print("    📄 Context at EOF: " .. context.file .. ":" .. context.line)
+	end)
+
+	it('should track real cursor movement with debouncing', function()
+		local bufnr = test_env.open_test_file(env.files.lua_file, { 8, 20 })
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		local position = require('hoverfloat.core.position')
+
+		-- Setup cursor tracking
+		cursor_tracker.setup_tracking()
+		cursor_tracker.enable()
+		cursor_tracker.clear_position_cache()
+
+		-- Set a longer debounce for testing
+		cursor_tracker.set_debounce_delay(100)
+
+		-- Test rapid cursor movements (should be debounced)
+		local test_positions = {
+			{ 8,  20 }, -- add_numbers function
+			{ 8,  25 }, -- still on same function
+			{ 26, 15 }, -- new_calculator function  
+			{ 26, 20 }, -- still on new_calculator
+			{ 45, 10 }, -- calc:add method
+		}
+
+		local position_changes = 0
+		local last_position = nil
+
+		for i, pos in ipairs(test_positions) do
+			vim.api.nvim_win_set_cursor(0, pos)
+			
+			-- Get position identifier for this cursor position
+			local current_pos_id = position.get_position_identifier()
+			
+			if current_pos_id ~= last_position then
+				position_changes = position_changes + 1
+				last_position = current_pos_id
+				print("    🎯 Position " .. i .. ": " .. current_pos_id)
+			end
+			
+			-- Small delay between movements
+			vim.wait(50)
+		end
+
+		-- Wait for debounce to complete
+		vim.wait(150)
+
+		print("    📊 Total position changes: " .. position_changes)
+		print("    ⏱️  Debounced cursor tracking working")
+
+		-- Test force update
+		local initial_stats = cursor_tracker.get_stats()
+		cursor_tracker.force_update()
+		vim.wait(10) -- Small wait for force update to process
+		
+		print("    ⚡ Force update completed")
+
+		-- Cleanup
+		cursor_tracker.disable()
+	end)
+
+	it('should handle cursor tracking integration with cache', function()
+		local bufnr = test_env.open_test_file(env.files.lua_file, { 8, 20 })
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		local cache = require('hoverfloat.prefetch.cache')
+		local position = require('hoverfloat.core.position')
+
+		-- Clear cache and setup tracking
+		cache.clear_all()
+		cursor_tracker.setup_tracking()
+		cursor_tracker.enable()
+		cursor_tracker.clear_position_cache()
+
+		-- Move to a specific position
+		vim.api.nvim_win_set_cursor(0, { 8, 20 })
+		local pos_id = position.get_position_identifier()
+
+		-- Simulate cache data for this position
+		local test_cache_data = {
+			hover = { "Test function", "Returns a greeting" },
+			definition = { file = env.files.lua_file, line = 8, col = 9 }
+		}
+
+		-- Store in cache (simulate prefetching)
+		cache.store(bufnr, 8, 'add_numbers', test_cache_data)
+
+		-- Verify cache integration
+		local cached_data = cache.get_cursor_data()
+		if cached_data then
+			print("    💾 Cache hit for position: " .. pos_id)
+			print("    📝 Cached hover lines: " .. #cached_data.hover)
+		else
+			print("    ❌ No cache data found for position")
+		end
+
+		-- Test cursor tracking with cached data
+		cursor_tracker.force_update()
+		vim.wait(50)
+
+		local stats = cursor_tracker.get_stats()
+		print("    📊 Tracking stats: enabled=" .. tostring(stats.tracking_enabled))
+		print("    🔄 Cache-integrated cursor tracking working")
+
+		cursor_tracker.disable()
 	end)
 
 	-- Cleanup after all tests

@@ -1,6 +1,9 @@
 -- tests/test_env.lua - Real Neovim test environment with actual LSP
+-- Now uses unified LSP setup module
 
--- Simple logging functions
+local lsp_setup = require('tests.test_lsp_setup')
+
+-- Simple logging functions (kept for backward compatibility)
 local function print_info(message)
 	print('[INFO] ' .. message)
 end
@@ -65,54 +68,14 @@ local function setup_neovim_settings()
 	print_info('Added plugin to runtime path: ' .. plugin_dir)
 end
 
--- Setup LSP for testing with comprehensive error handling
+-- Use unified LSP setup (simplified)
 local function setup_lua_lsp()
-	-- Check if lua-language-server is available
-	if vim.fn.executable('lua-language-server') == 0 then
-		print_warning('lua-language-server not found, skipping Lua LSP tests')
-		return false
-	end
-
-	-- Try to require lspconfig
-	local ok, lspconfig = pcall(require, 'lspconfig')
-	if not ok then
-		print_warning('lspconfig not available, cannot setup Lua LSP')
-		return false
-	end
-
-	-- Setup lua_ls with error handling
-	local setup_ok, setup_err = pcall(function()
-		lspconfig.lua_ls.setup({
-			settings = {
-				Lua = {
-					runtime = { version = 'LuaJIT' },
-					diagnostics = {
-						globals = { 'vim' },
-						disable = { 'lowercase-global' } -- Reduce noise in tests
-					},
-					workspace = {
-						library = vim.api.nvim_get_runtime_file("", true),
-						checkThirdParty = false,
-					},
-					telemetry = { enable = false },
-				},
-			},
-			root_dir = function() return temp_dir end,
-			single_file_support = true,
-			on_attach = function(client, bufnr)
-				table.insert(state.lsp_clients_started, client)
-				print_info('Lua LSP attached to buffer ' .. bufnr)
-			end,
-		})
-	end)
-
-	if not setup_ok then
-		print_error('Failed to setup lua_ls: ' .. tostring(setup_err))
-		return false
-	end
-
-	print_success('Lua LSP configured successfully')
-	return true
+	return lsp_setup.setup_lua_lsp({ 
+		root_dir = function() return temp_dir end,
+		on_attach = function(client, bufnr)
+			table.insert(state.lsp_clients_started, client)
+		end
+	})
 end
 
 -- Go LSP setup removed for simplicity
@@ -255,26 +218,9 @@ function M.setup()
 	return env
 end
 
--- Wait for LSP to attach and be ready with better error reporting
+-- Use unified LSP wait function
 function M.wait_for_lsp(bufnr, timeout_ms)
-	timeout_ms = timeout_ms or 5000
-	local start_time = vim.uv.now()
-
-	print_info('Waiting for LSP to attach to buffer ' .. bufnr .. '...')
-
-	while vim.uv.now() - start_time < timeout_ms do
-		local clients = vim.lsp.get_clients({ bufnr = bufnr })
-		if #clients > 0 then
-			print_success('LSP attached (' .. #clients .. ' clients)')
-			-- Wait a bit more for LSP to be fully ready
-			vim.wait(500)
-			return true
-		end
-		vim.wait(100)
-	end
-
-	print_warning('LSP did not attach within timeout (' .. timeout_ms .. 'ms)')
-	return false
+	return lsp_setup.wait_for_lsp(bufnr, timeout_ms)
 end
 
 -- Open a test file and wait for LSP with better error handling
@@ -329,18 +275,8 @@ function M.cleanup()
 		end
 	end
 
-	-- Stop LSP clients
-	for _, client in ipairs(state.lsp_clients_started) do
-		local stop_ok, stop_err = pcall(function()
-			client.stop()
-		end)
-		if not stop_ok then
-			print_warning('Failed to stop LSP client: ' .. tostring(stop_err))
-		end
-	end
-	if #state.lsp_clients_started > 0 then
-		print_success('Stopped ' .. #state.lsp_clients_started .. ' LSP clients')
-	end
+	-- Use unified LSP cleanup
+	lsp_setup.cleanup_lsp()
 
 	-- Remove temp files and directory
 	if state.temp_dir_created then

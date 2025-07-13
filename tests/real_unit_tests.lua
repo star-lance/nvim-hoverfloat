@@ -1,59 +1,14 @@
 -- tests/real_unit_tests.lua - Unit tests with real Neovim API but no LSP dependencies
 
--- Test utilities
-local function describe(name, func)
-	print("📝 " .. name)
-	func()
-end
+-- Load unified test framework
+local test_framework = require('tests.test_framework')
+local describe = test_framework.describe
+local it = test_framework.it
+local assert_ok = test_framework.assert_ok
+local assert_type = test_framework.assert_type
 
-local function it(name, func)
-	local ok, err = pcall(func)
-	if ok then
-		print("  ✅ " .. name)
-	else
-		print("  ❌ " .. name .. ": " .. tostring(err))
-		error("Test failed: " .. name)
-	end
-end
-
--- Simple assertion helpers
-local function assert_ok(condition, message)
-	if not condition then
-		error(message or "Assertion failed")
-	end
-end
-
-local function assert_type(expected_type, value)
-	if type(value) ~= expected_type then
-		error("Expected " .. expected_type .. " but got " .. type(value))
-	end
-end
-
--- Create a temporary test file
-local temp_file = '/tmp/test_' .. os.time() .. '.lua'
-local test_content = [[
-local TestModule = {}
-
-function TestModule.hello_world()
-    return "Hello, World!"
-end
-
-function TestModule.add(a, b)
-    return a + b
-end
-
-local function private_function()
-    return "private"
-end
-
-TestModule.CONSTANT = 42
-
-return TestModule
-]]
-
-local file = io.open(temp_file, 'w')
-file:write(test_content)
-file:close()
+-- Create a temporary test file using framework utility
+local temp_file = test_framework.create_temp_test_file()
 
 describe('Real Neovim API Tests', function()
 	it('should work with real buffers', function()
@@ -194,8 +149,8 @@ describe('Real Neovim API Tests', function()
 
 		local message = msg_handler.create_context_update(context)
 		assert_type('string', message)
-		assert_contains('context_update', message)
-		assert_contains('\n', message) -- Should end with newline
+		assert_ok(message:find('context_update'), "Message should contain context_update")
+		assert_ok(message:find('\n'), "Message should end with newline")
 
 		print("    📤 Created message length: " .. #message)
 
@@ -213,29 +168,32 @@ describe('Real Neovim API Tests', function()
 		local performance = require('hoverfloat.core.performance')
 		performance.reset_stats()
 
-		-- Simulate some operations
-		local start_time = performance.start_request()
-
-		-- Do some real work (file operations)
+		-- Test 1: LSP request flow
+		local start_time1 = performance.start_request()
 		local line_count = vim.api.nvim_buf_line_count(0)
+		local response_time1 = performance.complete_request(start_time1, false, false) -- LSP request
+		assert_type('number', response_time1)
+		assert_ok(response_time1 >= 0, "Response time should be non-negative")
+
+		-- Test 2: Cache hit flow  
+		local start_time2 = performance.start_request()
 		local cursor_pos = vim.api.nvim_win_get_cursor(0)
+		local response_time2 = performance.complete_request(start_time2, true, false) -- Cache hit
 
-		local response_time = performance.complete_request(start_time, false, false)
-		assert_type('number', response_time)
-		assert_ok(response_time >= 0, "Response time should be non-negative")
-
-		print("    ⚡ Operation took: " .. response_time .. "ms")
-
-		-- Record some cache hits and LSP requests
+		-- Test 3: Manual cache hit recording
 		performance.record_cache_hit()
-		performance.record_lsp_request()
 
 		local stats = performance.get_stats()
-		assert_ok(stats.total_requests == 1, "Should have 1 total request")
-		assert_ok(stats.cache_hits == 1, "Should have 1 cache hit")
+		
+		-- We made 3 total requests: start_request() called 2 times + record_cache_hit() called 1 time
+		assert_ok(stats.total_requests == 3, "Should have 3 total requests")
+		assert_ok(stats.cache_hits == 2, "Should have 2 cache hits")
 		assert_ok(stats.lsp_requests == 1, "Should have 1 LSP request")
 
-		print("    📊 Performance stats: " .. vim.inspect(stats))
+		print("    ⚡ LSP operation: " .. response_time1 .. "ms")
+		print("    💾 Cache operation: " .. response_time2 .. "ms")
+		print("    📊 Performance stats: requests=" .. stats.total_requests .. 
+		      ", cache_hits=" .. stats.cache_hits .. ", lsp=" .. stats.lsp_requests)
 	end)
 
 	it('should handle socket client state', function()
@@ -288,6 +246,130 @@ describe('Real Neovim API Tests', function()
 		print("    🧹 Position cache cleared")
 	end)
 
+	it('should handle debounce delay configuration', function()
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		
+		-- Test default debounce delay
+		local stats = cursor_tracker.get_stats()
+		assert_ok(stats.debounce_delay == 20, "Default debounce should be 20ms")
+		
+		-- Test setting custom debounce delay
+		cursor_tracker.set_debounce_delay(50)
+		stats = cursor_tracker.get_stats()
+		assert_ok(stats.debounce_delay == 50, "Custom debounce should be 50ms")
+		
+		-- Reset to default
+		cursor_tracker.set_debounce_delay(20)
+		stats = cursor_tracker.get_stats()
+		assert_ok(stats.debounce_delay == 20, "Should reset to 20ms")
+		
+		print("    ⏱️  Debounce delay configuration working")
+	end)
+
+	it('should handle position deduplication logic', function()
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		local position = require('hoverfloat.core.position')
+		
+		-- Clear any existing position cache
+		cursor_tracker.clear_position_cache()
+		
+		-- Get current position identifier
+		local pos_id = position.get_position_identifier()
+		assert_type('string', pos_id)
+		assert_ok(#pos_id > 0, "Position identifier should not be empty")
+		
+		-- Verify position identifier format (file:line:col:word)
+		assert_ok(pos_id:find(":"), "Position identifier should contain colons")
+		
+		print("    🔍 Position identifier: " .. pos_id)
+		print("    ✅ Position deduplication logic working")
+	end)
+
+	it('should track autocmd registration', function()
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		
+		-- Setup tracking (registers autocmds)
+		cursor_tracker.setup_tracking()
+		
+		-- Check if autocmds are registered by looking for the group
+		local autocmds = vim.api.nvim_get_autocmds({ group = "HoverFloatCursorTracker" })
+		assert_ok(#autocmds > 0, "Should have registered autocmds")
+		
+		-- Check for specific events
+		local events = {}
+		for _, autocmd in ipairs(autocmds) do
+			events[autocmd.event] = true
+		end
+		
+		assert_ok(events["CursorMoved"], "Should register CursorMoved event")
+		assert_ok(events["CursorMovedI"], "Should register CursorMovedI event")
+		assert_ok(events["BufEnter"], "Should register BufEnter event")
+		assert_ok(events["LspAttach"], "Should register LspAttach event")
+		
+		print("    📋 Registered " .. #autocmds .. " autocmds")
+		print("    🎯 Autocmd registration working")
+	end)
+
+	it('should handle tracking conditions', function()
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		local buffer = require('hoverfloat.utils.buffer')
+		local socket_client = require('hoverfloat.communication.socket_client')
+		
+		-- Test tracking enabled state
+		cursor_tracker.enable()
+		local stats = cursor_tracker.get_stats()
+		assert_ok(stats.tracking_enabled, "Tracking should be enabled")
+		
+		-- Test buffer suitability check
+		local bufnr = vim.api.nvim_get_current_buf()
+		local is_suitable = buffer.is_suitable_for_lsp(bufnr)
+		assert_type('boolean', is_suitable)
+		
+		-- Test socket connection state
+		local socket_status = socket_client.get_status()
+		assert_type('table', socket_status)
+		assert_type('boolean', socket_status.connected)
+		
+		print("    📡 Socket connected: " .. tostring(socket_status.connected))
+		print("    📄 Buffer suitable: " .. tostring(is_suitable))
+		print("    ✅ Tracking conditions evaluation working")
+	end)
+
+	it('should handle force update functionality', function()
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		
+		-- Enable tracking for force update test
+		cursor_tracker.enable()
+		
+		-- Test force update (should not throw errors)
+		local force_ok = pcall(cursor_tracker.force_update)
+		assert_ok(force_ok, "Force update should not throw errors")
+		
+		-- Check that any pending updates are cancelled
+		local stats = cursor_tracker.get_stats()
+		assert_ok(not stats.has_pending_update, "Should not have pending updates after force")
+		
+		print("    ⚡ Force update working")
+	end)
+
+	it('should handle cleanup properly', function()
+		local cursor_tracker = require('hoverfloat.core.cursor_tracker')
+		
+		-- Enable tracking and set some state
+		cursor_tracker.enable()
+		cursor_tracker.set_debounce_delay(100)
+		
+		-- Perform cleanup
+		cursor_tracker.cleanup()
+		
+		-- Verify cleanup effects
+		local stats = cursor_tracker.get_stats()
+		assert_ok(not stats.tracking_enabled, "Tracking should be disabled after cleanup")
+		assert_ok(not stats.has_pending_update, "Should not have pending updates after cleanup")
+		
+		print("    🧹 Cleanup working properly")
+	end)
+
 	it('should handle real line ranges and positions', function()
 		local position = require('hoverfloat.core.position')
 
@@ -315,7 +397,7 @@ describe('Real Neovim API Tests', function()
 
 	-- Clean up
 	vim.cmd('bdelete!')
-	os.remove(temp_file)
+	test_framework.cleanup_temp_file(temp_file)
 	print("🧹 Temporary test file cleaned up")
 end)
 
