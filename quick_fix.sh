@@ -1,4 +1,22 @@
--- lua/hoverfloat/config.lua - Flexible configuration with sensible defaults
+#!/bin/bash
+# quick_fix.sh - Fix circular dependency issues
+
+set -e
+
+echo "🔧 Fixing circular dependency issues..."
+
+# Remove problematic files
+echo "   Removing problematic files..."
+rm -f lua/hoverfloat/core/metrics.lua
+rm -f lua/hoverfloat/core/analyzer.lua  
+rm -f lua/hoverfloat/core/monitor.lua
+rm -f lua/hoverfloat/constants.lua
+
+# Create config.lua if it doesn't exist
+if [[ ! -f "lua/hoverfloat/config.lua" ]]; then
+    echo "   Creating config.lua..."
+    cat > lua/hoverfloat/config.lua << 'CONFIG_EOF'
+-- lua/hoverfloat/config.lua - Fixed configuration module
 local M = {}
 
 -- Default configuration
@@ -7,12 +25,12 @@ local DEFAULT_CONFIG = {
   process = {
     socket_path = "/tmp/nvim_context.sock",
     binary_path = vim.fn.expand("~/.local/bin/nvim-context-tui"),
-    auto_install = true, -- Automatically run make install if binary missing
+    auto_install = true,
   },
 
   -- Terminal settings
   terminal = {
-    preferred = nil, -- Auto-detect if nil, or specify: "kitty", "alacritty", etc.
+    preferred = nil, -- Auto-detect: "kitty", "alacritty", etc.
     size = { width = 80, height = 25 },
     opacity = 0.95,
     font_size = 11,
@@ -20,7 +38,7 @@ local DEFAULT_CONFIG = {
 
   -- Performance settings
   performance = {
-    debounce_base = 10,   -- Base debounce in ms (adaptive)
+    debounce_base = 20,   -- Base debounce in ms
     cache_ttl_ms = 45000, -- Cache TTL
     max_cache_entries = 1000,
     update_time = 100,    -- Vim updatetime for CursorHold
@@ -28,27 +46,17 @@ local DEFAULT_CONFIG = {
 
   -- Feature toggles
   features = {
-    auto_start = true, -- Auto-start when LSP attaches
+    auto_start = true,
     show_hover = true,
     show_references = true,
     show_definition = true,
     show_type_info = true,
     max_references = 8,
-    scrollable_content = true,
-    selection_mode = true,
   },
 
   -- UI settings
   ui = {
-    theme = "tokyo-night", -- Future: support multiple themes
-    icons = {
-      hover = "📖",
-      references = "🔗",
-      definition = "📍",
-      type_info = "🎯",
-      connected = "●",
-      disconnected = "●",
-    },
+    theme = "tokyo-night",
     keymaps = {
       toggle = "<leader>ct",
       open = "<leader>co",
@@ -61,12 +69,12 @@ local DEFAULT_CONFIG = {
   -- Developer settings
   dev = {
     debug = false,
-    log_file = nil, -- Auto-generated if debug is true
+    log_dir = nil,
   },
 }
 
 -- User configuration (merged with defaults)
-local user_config = {}
+local user_config = vim.deepcopy(DEFAULT_CONFIG)
 
 -- Helper to deep merge tables
 local function deep_merge(base, override)
@@ -74,18 +82,8 @@ local function deep_merge(base, override)
     return override
   end
 
-  local result = {}
+  local result = vim.deepcopy(base)
 
-  -- Copy base values
-  for k, v in pairs(base) do
-    if type(v) == "table" then
-      result[k] = vim.deepcopy(v)
-    else
-      result[k] = v
-    end
-  end
-
-  -- Override with user values
   for k, v in pairs(override) do
     if type(v) == "table" and type(result[k]) == "table" then
       result[k] = deep_merge(result[k], v)
@@ -100,16 +98,13 @@ end
 -- Setup configuration
 function M.setup(opts)
   opts = opts or {}
-
-  -- Merge with defaults
   user_config = deep_merge(DEFAULT_CONFIG, opts)
 
-  -- Apply some settings immediately
+  -- Apply immediate settings
   if user_config.performance.update_time then
     vim.opt.updatetime = user_config.performance.update_time
   end
 
-  -- Set terminal preference if specified
   if user_config.terminal.preferred then
     vim.env.HOVERFLOAT_TERMINAL = user_config.terminal.preferred
   end
@@ -137,7 +132,7 @@ function M.get_value(path)
   return current
 end
 
--- Convenience getters for common values
+-- Convenience getters
 function M.get_socket_path()
   return user_config.process.socket_path
 end
@@ -207,7 +202,7 @@ function M.validate()
   if vim.fn.executable(binary_path) ~= 1 then
     ok = false
     table.insert(issues, "TUI binary not found at: " .. binary_path)
-
+    
     if user_config.process.auto_install then
       table.insert(issues, "Run :HoverFloatInstall or 'make install' to build the binary")
     end
@@ -220,27 +215,12 @@ function M.validate()
     table.insert(issues, "Socket directory does not exist: " .. socket_dir)
   end
 
-  -- Validate terminal settings
-  if user_config.terminal.preferred then
-    local valid_terminals = {
-      "kitty", "alacritty", "wezterm", "foot",
-      "gnome-terminal", "konsole", "xterm"
-    }
-    if not vim.tbl_contains(valid_terminals, user_config.terminal.preferred) then
-      ok = false
-      table.insert(issues, "Unknown terminal: " .. user_config.terminal.preferred)
-    end
-  end
-
   return ok, issues
 end
 
 -- Export configuration for display
 function M.export()
-  return vim.inspect(user_config, {
-    indent = "  ",
-    depth = 4,
-  })
+  return vim.inspect(user_config, { indent = "  ", depth = 4 })
 end
 
 -- Reset to defaults
@@ -248,9 +228,11 @@ function M.reset()
   user_config = vim.deepcopy(DEFAULT_CONFIG)
 end
 
--- Get default configuration (for documentation)
+-- Get default configuration
 function M.get_defaults()
   return vim.deepcopy(DEFAULT_CONFIG)
 end
 
 return M
+CONFIG_EOF
+fi

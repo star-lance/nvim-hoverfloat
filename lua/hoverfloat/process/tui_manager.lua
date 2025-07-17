@@ -1,22 +1,28 @@
--- lua/hoverfloat/process/tui_manager.lua - Enhanced with better readiness and terminal support
+-- lua/hoverfloat/process/tui_manager.lua - Simplified and fixed TUI manager
 local M = {}
-local socket_client = require('hoverfloat.communication.socket_client')
 local logger = require('hoverfloat.utils.logger')
+
+-- Get configuration
+local function get_config()
+  local config = require('hoverfloat.config')
+  return {
+    socket_path = config.get_socket_path(),
+    binary_path = config.get_binary_path(),
+    terminal_size = config.get_terminal_size(),
+  }
+end
 
 -- Process state
 local state = {
   process_handle = nil,
   process_running = false,
   readiness_signaled = false,
-  readiness_timeout_timer = nil,
   terminal_process = nil,
 }
 
 -- Configuration
-local SOCKET_PATH = "/tmp/nvim_context.sock"
-local BINARY_PATH = vim.fn.expand("~/.local/bin/nvim-context-tui")
-local READINESS_TIMEOUT_MS = 10000      -- 10 seconds timeout for readiness
-local READINESS_CHECK_INTERVAL_MS = 100 -- Check every 100ms
+local READINESS_TIMEOUT_MS = 10000
+local READINESS_CHECK_INTERVAL_MS = 200
 
 -- Terminal configurations (ordered by preference)
 local TERMINAL_CONFIGS = {
@@ -31,7 +37,6 @@ local TERMINAL_CONFIGS = {
         "--override=initial_window_height=" .. height .. "c",
         "--override=remember_window_size=no",
         "--override=background_opacity=0.95",
-        "--override=font_size=11",
         "--hold",
         "-e", binary, socket
       }
@@ -44,7 +49,8 @@ local TERMINAL_CONFIGS = {
       return {
         "alacritty",
         "--title", title,
-        "--dimensions", tostring(width), tostring(height),
+        "--option", "window.dimensions.columns=" .. width,
+        "--option", "window.dimensions.lines=" .. height,
         "-e", binary, socket
       }
     end
@@ -86,17 +92,6 @@ local TERMINAL_CONFIGS = {
     end
   },
   {
-    name = "konsole",
-    check = function() return vim.fn.executable("konsole") == 1 end,
-    cmd = function(title, width, height, binary, socket)
-      return {
-        "konsole",
-        "--title", title,
-        "-e", binary, socket
-      }
-    end
-  },
-  {
     name = "xterm",
     check = function() return vim.fn.executable("xterm") == 1 end,
     cmd = function(title, width, height, binary, socket)
@@ -112,7 +107,7 @@ local TERMINAL_CONFIGS = {
 
 -- Get the best available terminal
 local function get_terminal_config()
-  -- First check if user has a preference in environment
+  -- Check user preference
   local preferred = vim.env.HOVERFLOAT_TERMINAL
   if preferred then
     for _, config in ipairs(TERMINAL_CONFIGS) do
@@ -124,7 +119,7 @@ local function get_terminal_config()
     logger.plugin("warn", "Preferred terminal '" .. preferred .. "' not available")
   end
 
-  -- Otherwise find first available
+  -- Find first available
   for _, config in ipairs(TERMINAL_CONFIGS) do
     if config.check() then
       logger.plugin("info", "Using terminal: " .. config.name)
@@ -135,15 +130,10 @@ local function get_terminal_config()
   return nil
 end
 
--- Check for readiness using file-based signaling
-local function check_readiness_file()
-  local ready_file = string.format("/tmp/nvim_context_tui_%d.ready", state.terminal_process or 0)
-  if vim.fn.filereadable(ready_file) == 1 then
-    -- Remove the file to avoid stale signals
-    vim.fn.delete(ready_file)
-    return true
-  end
-  return false
+-- Simplified readiness detection - check for socket file
+local function check_readiness()
+  local cfg = get_config()
+  return vim.fn.filereadable(cfg.socket_path) == 1
 end
 
 -- Handle readiness signal
@@ -153,16 +143,9 @@ local function on_readiness_signaled()
   end
 
   state.readiness_signaled = true
+  logger.plugin("info", "TUI is ready")
 
-  -- Cancel readiness timeout
-  if state.readiness_timeout_timer then
-    state.readiness_timeout_timer:close()
-    state.readiness_timeout_timer = nil
-  end
-
-  logger.plugin("info", "TUI readiness signal received")
-
-  -- Now it's safe to connect to the socket
+  -- Set up socket connection
   M.setup_socket_connection()
 end
 
@@ -173,12 +156,12 @@ local function poll_for_readiness()
   local function check()
     -- Check if process is still running
     if not state.process_running then
-      logger.plugin("error", "TUI process died before signaling readiness")
+      logger.plugin("error", "TUI process died before becoming ready")
       return
     end
 
-    -- Check for readiness file
-    if check_readiness_file() then
+    -- Check for socket file existence
+    if check_readiness() then
       on_readiness_signaled()
       return
     end
@@ -197,16 +180,18 @@ local function poll_for_readiness()
   check()
 end
 
--- Start the TUI process with automatic terminal detection
+-- Start the TUI process
 function M.start()
   if state.process_handle then
     logger.plugin("warn", "TUI process already running")
     return true
   end
 
+  local cfg = get_config()
+
   -- Check if binary exists
-  if vim.fn.executable(BINARY_PATH) ~= 1 then
-    logger.plugin("error", "TUI binary not found. Run 'make install' to build it.")
+  if vim.fn.executable(cfg.binary_path) ~= 1 then
+    logger.plugin("error", "TUI binary not found at: " .. cfg.binary_path)
     vim.notify("nvim-hoverfloat: TUI binary not found. Run 'make install' to build it.", vim.log.levels.ERROR)
     return false
   end
@@ -223,16 +208,22 @@ function M.start()
   -- Reset state
   state.readiness_signaled = false
 
+  -- Remove old socket file if it exists
+  if vim.fn.filereadable(cfg.socket_path) == 1 then
+    vim.fn.delete(cfg.socket_path)
+  end
+
   -- Build command
+  local size = cfg.terminal_size
   local cmd = terminal_config.cmd(
-    "nvim-hoverfloat-tui", -- title
-    80,                    -- width
-    25,                    -- height
-    BINARY_PATH,
-    SOCKET_PATH
+    "LSP Context",
+    size.width,
+    size.height,
+    cfg.binary_path,
+    cfg.socket_path
   )
 
-  logger.plugin("info", "Starting TUI with " .. terminal_config.name .. ": " .. table.concat(cmd, " "))
+  logger.plugin("info", "Starting TUI: " .. table.concat(cmd, " "))
 
   local handle = vim.fn.jobstart(cmd, {
     detach = true,
@@ -244,12 +235,12 @@ function M.start()
   if handle > 0 then
     state.process_handle = handle
     state.process_running = true
-    state.terminal_process = handle -- Store for readiness file checking
+    state.terminal_process = handle
 
     -- Start polling for readiness
     poll_for_readiness()
 
-    logger.plugin("info", "TUI started, waiting for readiness signal...")
+    logger.plugin("info", "TUI started successfully")
     return true
   else
     logger.plugin("error", "Failed to start TUI")
@@ -260,6 +251,7 @@ end
 
 -- Setup socket connection after TUI signals readiness
 function M.setup_socket_connection()
+  local cfg = get_config()
   local max_retries = 10
   local retry_count = 0
 
@@ -267,13 +259,22 @@ function M.setup_socket_connection()
     retry_count = retry_count + 1
 
     -- Check if socket file exists
-    if vim.fn.filereadable(SOCKET_PATH) == 1 then
-      socket_client.connect(SOCKET_PATH)
+    if vim.fn.filereadable(cfg.socket_path) == 1 then
+      local socket_client = require('hoverfloat.communication.socket_client')
+      socket_client.connect(cfg.socket_path)
 
       -- Check if connection was successful after a brief delay
       vim.defer_fn(function()
         if socket_client.is_connected() then
-          logger.plugin("debug", "Socket connected successfully")
+          logger.plugin("info", "Socket connected successfully")
+
+          -- Trigger initial context update
+          vim.defer_fn(function()
+            local ok, cursor_tracker = pcall(require, 'hoverfloat.core.cursor_tracker')
+            if ok and cursor_tracker.is_tracking_enabled() then
+              cursor_tracker.force_update()
+            end
+          end, 100)
         else
           if retry_count < max_retries then
             logger.plugin("warn", "Socket connection attempt " .. retry_count .. " failed, retrying...")
@@ -289,7 +290,7 @@ function M.setup_socket_connection()
 
     -- Socket file doesn't exist yet, retry if under limit
     if retry_count < max_retries then
-      vim.defer_fn(try_connect, 100)
+      vim.defer_fn(try_connect, 200)
     else
       logger.plugin("error", "Socket file never appeared")
       vim.notify("nvim-hoverfloat: TUI socket connection failed", vim.log.levels.ERROR)
@@ -302,18 +303,15 @@ end
 
 -- Handle process exit
 function M.on_process_exit(exit_code)
-  -- Clean up readiness file if it exists
-  if state.terminal_process then
-    local ready_file = string.format("/tmp/nvim_context_tui_%d.ready", state.terminal_process)
-    vim.fn.delete(ready_file)
-  end
-
   state.process_handle = nil
   state.process_running = false
   state.readiness_signaled = false
   state.terminal_process = nil
 
   logger.plugin("info", "TUI exited with code: " .. exit_code)
+
+  -- Disconnect socket
+  local socket_client = require('hoverfloat.communication.socket_client')
   socket_client.disconnect()
 
   -- Auto-restart on unexpected exit (but not if clean shutdown)
@@ -325,6 +323,7 @@ end
 
 -- Stop the TUI process
 function M.stop()
+  local socket_client = require('hoverfloat.communication.socket_client')
   socket_client.disconnect()
 
   if state.process_handle then
@@ -387,9 +386,9 @@ function M.set_preferred_terminal(terminal_name)
   logger.plugin("info", "Set preferred terminal to: " .. terminal_name)
 end
 
--- No setup needed
+-- Setup function (placeholder for API compatibility)
 function M.setup()
-  -- Nothing to do
+  -- Configuration is handled by the config module
 end
 
 return M

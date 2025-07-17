@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
@@ -25,14 +26,14 @@ type ViewData struct {
 	MenuVisible    bool
 	MenuSelection  int
 
-	// Viewport fields removed - no longer using scrollable viewports
-	HoverViewport      interface{} // Placeholder to maintain compatibility
-	ReferencesViewport interface{}
-	DefinitionViewport interface{}
-	TypeInfoViewport   interface{}
+	// Viewport fields for scrolling
+	HoverViewport      interface{} // *viewport.Model
+	ReferencesViewport interface{} // *viewport.Model
+	DefinitionViewport interface{} // *viewport.Model
+	TypeInfoViewport   interface{} // *viewport.Model
 }
 
-// FocusArea constants (matching the model)
+// FocusArea constants
 const (
 	FocusHover = iota
 	FocusReferences
@@ -44,7 +45,7 @@ const (
 func Render(width, height int, data *ViewData, s *styles.Styles) string {
 	// Calculate layout dimensions
 	headerHeight := 3
-	footerHeight := 2
+	footerHeight := 3 // Increased for better help text
 	contentHeight := height - headerHeight - footerHeight
 
 	// Build the main sections
@@ -60,7 +61,6 @@ func Render(width, height int, data *ViewData, s *styles.Styles) string {
 		footer,
 	)
 
-	// Menu system removed for simplicity
 	return view
 }
 
@@ -85,7 +85,7 @@ func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 
 	// Calculate spacing to fill entire width
 	statusAndTime := fmt.Sprintf("%s  %s", status, s.Comment.Render(timestamp))
-	spacingNeeded := width - lipgloss.Width(title) - lipgloss.Width(statusAndTime) - 4 // padding
+	spacingNeeded := width - lipgloss.Width(title) - lipgloss.Width(statusAndTime) - 4
 	if spacingNeeded < 0 {
 		spacingNeeded = 0
 	}
@@ -121,7 +121,7 @@ func renderHeader(width int, data *ViewData, s *styles.Styles) string {
 	return header
 }
 
-// renderContent creates the main content area
+// renderContent creates the main content area with viewports
 func renderContent(width, height int, data *ViewData, s *styles.Styles) string {
 	if data.Context == nil {
 		return renderWaitingMessage(width, height, data, s)
@@ -131,28 +131,30 @@ func renderContent(width, height int, data *ViewData, s *styles.Styles) string {
 		return renderError(width, height, data, s)
 	}
 
-	// Calculate section dimensions
 	sections := []string{}
-	sectionHeight := height / 4 // Base height for each section
+	remainingHeight := height
 
-	// Build visible sections
+	// Render visible sections with viewports
 	if data.ShowHover && data.Context.HasHover() {
-		section := renderHoverSection(width, sectionHeight, data, s)
+		section := renderHoverSectionWithViewport(width, remainingHeight, data, s)
 		sections = append(sections, section)
+		remainingHeight -= countLines(section) + 1
 	}
 
-	if data.ShowReferences && data.Context.HasReferences() {
-		section := renderReferencesSection(width, sectionHeight, data, s)
+	if data.ShowReferences && data.Context.HasReferences() && remainingHeight > 4 {
+		section := renderReferencesSectionWithViewport(width, remainingHeight, data, s)
 		sections = append(sections, section)
+		remainingHeight -= countLines(section) + 1
 	}
 
-	if data.ShowDefinition && data.Context.HasDefinition() {
-		section := renderDefinitionSection(width, sectionHeight, data, s)
+	if data.ShowDefinition && data.Context.HasDefinition() && remainingHeight > 4 {
+		section := renderDefinitionSectionWithViewport(width, remainingHeight, data, s)
 		sections = append(sections, section)
+		remainingHeight -= countLines(section) + 1
 	}
 
-	if data.ShowTypeInfo && data.Context.HasTypeDefinition() {
-		section := renderTypeDefinitionSection(width, sectionHeight, data, s)
+	if data.ShowTypeInfo && data.Context.HasTypeDefinition() && remainingHeight > 4 {
+		section := renderTypeDefinitionSectionWithViewport(width, remainingHeight, data, s)
 		sections = append(sections, section)
 	}
 
@@ -160,15 +162,13 @@ func renderContent(width, height int, data *ViewData, s *styles.Styles) string {
 		return renderNoDataMessage(width, height, s)
 	}
 
-	// Join sections with spacing
+	// Join sections
 	content := strings.Join(sections, "\n")
-
-	// Ensure content fits in available height
 	return truncateContent(content, height)
 }
 
-// renderHoverSection creates the hover documentation section
-func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) string {
+// Render sections with viewport support
+func renderHoverSectionWithViewport(width, height int, data *ViewData, s *styles.Styles) string {
 	if data.Context == nil || !data.Context.HasHover() {
 		return ""
 	}
@@ -179,25 +179,33 @@ func renderHoverSection(width, height int, data *ViewData, s *styles.Styles) str
 		sectionStyle = s.SectionFocused
 	}
 
-	// Header with full width background
+	// Header
 	headerText := "📖 Documentation"
+	if vp, ok := data.HoverViewport.(*viewport.Model); ok && vp != nil {
+		scrollInfo := fmt.Sprintf(" [%d%%]", vp.ScrollPercent())
+		headerText += s.Comment.Render(scrollInfo)
+	}
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format hover content directly (no viewport)
-	content := formatHoverContent(data.Context.Hover, width-4, s)
+	// Content from viewport or fallback
+	var contentFormatted string
+	if vp, ok := data.HoverViewport.(*viewport.Model); ok && vp != nil {
+		// Use viewport's view
+		contentFormatted = vp.View()
+	} else {
+		// Fallback to static content
+		content := formatHoverContent(data.Context.Hover, width-4, s)
+		maxLines := min(height-3, 10)
+		contentFormatted = truncateToLines(content, maxLines)
+	}
 
-	// Use content as-is (simplified, no viewport scrolling)
-	contentFormatted := content
-
-	// Join and render section with full width
+	// Join and render section
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
-// renderReferencesSection creates the references section
-func renderReferencesSection(width, height int, data *ViewData, s *styles.Styles) string {
+func renderReferencesSectionWithViewport(width, height int, data *ViewData, s *styles.Styles) string {
 	if data.Context == nil || !data.Context.HasReferences() {
 		return ""
 	}
@@ -208,30 +216,36 @@ func renderReferencesSection(width, height int, data *ViewData, s *styles.Styles
 		sectionStyle = s.SectionFocused
 	}
 
-	// Header with count and full width
+	// Header with count
 	refCount := data.Context.GetTotalReferences()
 	refText := "reference"
 	if refCount != 1 {
 		refText = "references"
 	}
 	headerText := fmt.Sprintf("🔗 References (%d %s)", refCount, refText)
+	if vp, ok := data.ReferencesViewport.(*viewport.Model); ok && vp != nil {
+		scrollInfo := fmt.Sprintf(" [%d%%]", vp.ScrollPercent())
+		headerText += s.Comment.Render(scrollInfo)
+	}
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format references list with consistent background
-	content := formatReferences(data.Context, width-4, s)
+	// Content from viewport or fallback
+	var contentFormatted string
+	if vp, ok := data.ReferencesViewport.(*viewport.Model); ok && vp != nil {
+		contentFormatted = vp.View()
+	} else {
+		content := formatReferences(data.Context, width-4, s)
+		maxLines := min(height-3, 8)
+		contentFormatted = truncateToLines(content, maxLines)
+	}
 
-	// Use content as-is (no special background enforcement)
-	contentFormatted := content
-
-	// Join and render section with full width
+	// Join and render section
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
-// renderDefinitionSection creates the definition section
-func renderDefinitionSection(width, height int, data *ViewData, s *styles.Styles) string {
+func renderDefinitionSectionWithViewport(width, height int, data *ViewData, s *styles.Styles) string {
 	if data.Context == nil || !data.Context.HasDefinition() {
 		return ""
 	}
@@ -242,30 +256,31 @@ func renderDefinitionSection(width, height int, data *ViewData, s *styles.Styles
 		sectionStyle = s.SectionFocused
 	}
 
-	// Header with full width
+	// Header
 	headerText := "📍 Definition"
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format definition location with consistent background
-	def := data.Context.Definition
-	location := fmt.Sprintf("%s:%d:%d",
-		s.Path.Render(truncateString(def.File, width-10)),
-		def.Line,
-		def.Col,
-	)
+	// Content from viewport or fallback
+	var contentFormatted string
+	if vp, ok := data.DefinitionViewport.(*viewport.Model); ok && vp != nil {
+		contentFormatted = vp.View()
+	} else {
+		def := data.Context.Definition
+		location := fmt.Sprintf("%s:%d:%d",
+			s.Path.Render(truncateString(def.File, width-10)),
+			def.Line,
+			def.Col,
+		)
+		contentFormatted = location
+	}
 
-	// Use location content as-is (no special background enforcement)
-	contentFormatted := location
-
-	// Join and render section with full width
+	// Join and render section
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
-// renderTypeDefinitionSection creates the type definition section
-func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.Styles) string {
+func renderTypeDefinitionSectionWithViewport(width, height int, data *ViewData, s *styles.Styles) string {
 	if data.Context == nil || !data.Context.HasTypeDefinition() {
 		return ""
 	}
@@ -276,30 +291,31 @@ func renderTypeDefinitionSection(width, height int, data *ViewData, s *styles.St
 		sectionStyle = s.SectionFocused
 	}
 
-	// Header with full width
+	// Header
 	headerText := "🎯 Type Definition"
 	headerPadded := headerText + strings.Repeat(" ", max(0, width-lipgloss.Width(headerText)-4))
 	header := s.WithWidth(s.SectionHeader, width).Render(headerPadded)
 
-	// Format type definition location with consistent background
-	typedef := data.Context.TypeDefinition
-	location := fmt.Sprintf("%s:%d:%d",
-		s.Path.Render(truncateString(typedef.File, width-10)),
-		typedef.Line,
-		typedef.Col,
-	)
+	// Content from viewport or fallback
+	var contentFormatted string
+	if vp, ok := data.TypeInfoViewport.(*viewport.Model); ok && vp != nil {
+		contentFormatted = vp.View()
+	} else {
+		typedef := data.Context.TypeDefinition
+		location := fmt.Sprintf("%s:%d:%d",
+			s.Path.Render(truncateString(typedef.File, width-10)),
+			typedef.Line,
+			typedef.Col,
+		)
+		contentFormatted = location
+	}
 
-	// Use location content as-is (no special background enforcement)
-	contentFormatted := location
-
-	// Join and render section with full width
+	// Join and render section
 	sectionContent := lipgloss.JoinVertical(lipgloss.Left, header, contentFormatted)
-
 	return s.WithWidth(sectionStyle, width).Render(sectionContent)
 }
 
 // Helper functions
-
 func formatHoverContent(hover []string, width int, s *styles.Styles) string {
 	if len(hover) == 0 {
 		return s.Comment.Render("No documentation available")
@@ -309,12 +325,10 @@ func formatHoverContent(hover []string, width int, s *styles.Styles) string {
 	if isMarkdownContent(hover) {
 		// Join all lines and render as markdown
 		content := strings.Join(hover, "\n")
-		rendered, err := renderMarkdown(content, width-4, true) // Use dark theme
+		rendered, err := renderMarkdown(content, width-4, true)
 		if err == nil && rendered != content {
-			// Only use rendered if it's actually different (glamour worked)
 			return rendered
 		}
-		// Fall back to simple rendering if markdown parsing fails or returned unchanged
 	}
 
 	// Simple text rendering with basic syntax highlighting
@@ -323,20 +337,15 @@ func formatHoverContent(hover []string, width int, s *styles.Styles) string {
 		// Simple syntax highlighting for code blocks
 		if strings.HasPrefix(line, "```") {
 			if strings.Contains(line, "```") && len(line) > 3 {
-				// Language specification
 				lines = append(lines, s.Code.Render(line))
 			} else {
-				// Code block delimiter
 				lines = append(lines, s.Comment.Render(line))
 			}
 		} else if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
-			// Indented code
 			lines = append(lines, s.Code.Render(line))
 		} else if strings.HasPrefix(line, "#") {
-			// Markdown headers
 			lines = append(lines, s.Highlight.Render(line))
 		} else {
-			// Regular text
 			lines = append(lines, s.Body.Render(truncateString(line, width)))
 		}
 	}
@@ -352,7 +361,7 @@ func formatReferences(context *socket.ContextData, width int, s *styles.Styles) 
 
 	var lines []string
 	for i, ref := range refs {
-		if i >= 10 { // Limit displayed references
+		if i >= 10 {
 			break
 		}
 
@@ -410,25 +419,44 @@ func renderNoDataMessage(width, height int, s *styles.Styles) string {
 }
 
 func renderFooter(width int, data *ViewData, s *styles.Styles) string {
-	// Key bindings help (simplified)
+	// Enhanced key bindings help
 	bindings := []string{
-		s.Keybind.Render("hjkl") + " navigate",
-		s.Keybind.Render("enter") + " toggle",
+		s.Keybind.Render("hjkl") + " nav",
+		s.Keybind.Render("↵") + " toggle",
+		s.Keybind.Render("g/G") + " top/bot",
+		s.Keybind.Render("^u/^d") + " page",
+		s.Keybind.Render("+/-") + " resize",
+		s.Keybind.Render("v") + " select",
+		s.Keybind.Render("?") + " help",
 		s.Keybind.Render("q") + " quit",
 	}
 
 	help := strings.Join(bindings, "  ")
 
-	// Pad to full width
-	helpPadded := help + strings.Repeat(" ", max(0, width-lipgloss.Width(help)-4))
+	// Show current mode
+	var modeIndicator string
+	if data.Focus == FocusHover {
+		modeIndicator = s.StatusInfo.Render("[Hover]")
+	} else if data.Focus == FocusReferences {
+		modeIndicator = s.StatusInfo.Render("[References]")
+	} else if data.Focus == FocusDefinition {
+		modeIndicator = s.StatusInfo.Render("[Definition]")
+	} else if data.Focus == FocusTypeDefinition {
+		modeIndicator = s.StatusInfo.Render("[Type]")
+	}
 
-	footer := s.WithWidth(s.Footer, width).Render(helpPadded)
+	// Combine help and mode
+	footerContent := help + "  " + modeIndicator
+
+	// Pad to full width
+	footerPadded := footerContent + strings.Repeat(" ", max(0, width-lipgloss.Width(footerContent)-4))
+
+	footer := s.WithWidth(s.Footer, width).Render(footerPadded)
 
 	return footer
 }
 
 // Utility functions
-
 func centerContent(content string, width int) string {
 	lines := strings.Split(content, "\n")
 	var centeredLines []string
@@ -462,8 +490,27 @@ func truncateContent(content string, maxHeight int) string {
 	return strings.Join(lines[:maxHeight], "\n")
 }
 
+func truncateToLines(content string, maxLines int) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) <= maxLines {
+		return content
+	}
+	return strings.Join(lines[:maxLines], "\n")
+}
+
+func countLines(content string) int {
+	return strings.Count(content, "\n") + 1
+}
+
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b
@@ -491,7 +538,7 @@ func isMarkdownContent(content []string) bool {
 			markdownIndicators++
 		}
 
-		// Weaker indicators (inline code, links)
+		// Weaker indicators
 		if strings.Contains(line, "`") && !strings.Contains(line, "```") ||
 			strings.Contains(line, "[") && strings.Contains(line, "]") ||
 			strings.Contains(line, "_") {
@@ -500,8 +547,6 @@ func isMarkdownContent(content []string) bool {
 	}
 
 	// Consider it markdown if we have enough indicators
-	// For small content (< 3 lines), need at least 1 strong indicator
-	// For larger content, need indicators in at least 25% of lines
 	if totalLines <= 3 {
 		return markdownIndicators >= 1
 	}

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
 	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
@@ -24,6 +26,15 @@ const (
 	FocusReferences
 	FocusDefinition
 	FocusTypeDefinition
+)
+
+// SelectionMode represents text selection state
+type SelectionMode int
+
+const (
+	SelectionNone SelectionMode = iota
+	SelectionStarted
+	SelectionActive
 )
 
 // ConnectionState represents the current connection status
@@ -44,65 +55,11 @@ type ConnectionStateChangedMsg struct {
 type HeartbeatMsg struct {
 	Timestamp int64
 }
-type TUIReadyMsg struct{} // New message type for readiness signaling
-
-// Buffer pools for performance optimization
-var (
-	// Reusable buffers for socket I/O operations
-	bufferPool = sync.Pool{
-		New: func() interface{} {
-			// Create 32KB buffers as recommended in guide.md
-			return make([]byte, 32*1024)
-		},
-	}
-	// Scanner buffer pool for JSON parsing
-	scannerBufferPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 0, 64*1024) // 64KB initial capacity
-		},
-	}
-)
-
-// MessageBridge handles thread-safe communication between goroutines and Bubble Tea
-type MessageBridge struct {
-	messages chan tea.Msg
-	mu       sync.RWMutex
+type ViewportReadyMsg struct {
+	Area FocusArea
 }
 
-func NewMessageBridge() *MessageBridge {
-	return &MessageBridge{
-		messages: make(chan tea.Msg, 200), // Buffered channel for message queue
-	}
-}
-
-// SendMessage queues a message to be sent to the main loop
-func (mb *MessageBridge) SendMessage(msg tea.Msg) {
-	select {
-	case mb.messages <- msg:
-		// Message queued successfully
-	default:
-		// Channel full, drop oldest messages to prevent blocking
-		select {
-		case <-mb.messages:
-			mb.messages <- msg
-		default:
-		}
-	}
-}
-
-// CheckMessages returns a command that polls for queued messages
-func (mb *MessageBridge) CheckMessages() tea.Cmd {
-	return func() tea.Msg {
-		select {
-		case msg := <-mb.messages:
-			return msg
-		default:
-			return ContinuePollingMsg{}
-		}
-	}
-}
-
-// App represents the main application model
+// App represents the main application model with enhanced interactivity
 type App struct {
 	// Display state
 	Width  int
@@ -120,8 +77,22 @@ type App struct {
 	ShowReferences bool
 	ShowDefinition bool
 	ShowTypeInfo   bool
+	SectionHeights map[FocusArea]int // Dynamic section heights
 
-	// Persistent socket communication
+	// Selection state
+	SelectionMode  SelectionMode
+	SelectionStart int
+	SelectionEnd   int
+	SelectedText   string
+
+	// Viewports for scrollable content
+	HoverViewport      viewport.Model
+	ReferencesViewport viewport.Model
+	DefinitionViewport viewport.Model
+	TypeInfoViewport   viewport.Model
+	viewportsReady     bool
+
+	// Socket communication
 	socketPath        string
 	socketListener    net.Listener
 	clientConn        net.Conn
@@ -131,9 +102,8 @@ type App struct {
 	heartbeatTimer    *time.Timer
 	connectionTimeout time.Duration
 
-	// Readiness signaling
-	readinessSignaled bool
-	readinessMutex    sync.Mutex
+	// Readiness handling
+	readinessHandled bool
 
 	// Styles
 	styles *styles.Styles
@@ -153,7 +123,510 @@ type Context struct {
 	TypeDefinition  *socket.LocationInfo  `json:"type_definition,omitempty"`
 }
 
-// convertSocketContextToModel converts socket.ContextData to model.Context
+// MessageBridge handles thread-safe communication
+type MessageBridge struct {
+	messages chan tea.Msg
+	mu       sync.RWMutex
+}
+
+func NewMessageBridge() *MessageBridge {
+	return &MessageBridge{
+		messages: make(chan tea.Msg, 200),
+	}
+}
+
+func (mb *MessageBridge) SendMessage(msg tea.Msg) {
+	select {
+	case mb.messages <- msg:
+	default:
+		// Channel full, drop oldest messages
+		select {
+		case <-mb.messages:
+			mb.messages <- msg
+		default:
+		}
+	}
+}
+
+func (mb *MessageBridge) CheckMessages() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case msg := <-mb.messages:
+			return msg
+		default:
+			return ContinuePollingMsg{}
+		}
+	}
+}
+
+// NewApp creates a new application model
+func NewApp(socketPath string) *App {
+	app := &App{
+		socketPath:        socketPath,
+		ShowHover:         true,
+		ShowReferences:    true,
+		ShowDefinition:    true,
+		ShowTypeInfo:      true,
+		Focus:             FocusHover,
+		styles:            styles.New(),
+		messageBridge:     NewMessageBridge(),
+		connectionState:   Disconnected,
+		connectionTimeout: 30 * time.Second,
+		SectionHeights:    make(map[FocusArea]int),
+		SelectionMode:     SelectionNone,
+	}
+
+	// Initialize default section heights
+	app.SectionHeights[FocusHover] = 10
+	app.SectionHeights[FocusReferences] = 8
+	app.SectionHeights[FocusDefinition] = 4
+	app.SectionHeights[FocusTypeDefinition] = 4
+
+	return app
+}
+
+// Init initializes the application
+func (m *App) Init() tea.Cmd {
+	// Send readiness signal immediately via a proper file descriptor
+	m.signalReadiness()
+
+	return tea.Batch(
+		m.startSocketServer(),
+		tea.EnterAltScreen,
+		m.messageBridge.CheckMessages(),
+	)
+}
+
+// signalReadiness sends readiness signal via a more reliable method
+func (m *App) signalReadiness() {
+	if m.readinessHandled {
+		return
+	}
+	m.readinessHandled = true
+
+	// Method 1: Write to stdout
+	fmt.Println("TUI_READY")
+	os.Stdout.Sync()
+
+	// Method 2: Create a readiness file (more reliable)
+	readyFile := fmt.Sprintf("/tmp/nvim_context_tui_%d.ready", os.Getpid())
+	if file, err := os.Create(readyFile); err == nil {
+		file.Close()
+	}
+}
+
+// Update handles messages and updates the model
+func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	// Update viewports if they're ready
+	if m.viewportsReady {
+		switch m.Focus {
+		case FocusHover:
+			newHover, cmd := m.HoverViewport.Update(msg)
+			m.HoverViewport = newHover
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		case FocusReferences:
+			newRefs, cmd := m.ReferencesViewport.Update(msg)
+			m.ReferencesViewport = newRefs
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		case FocusDefinition:
+			newDef, cmd := m.DefinitionViewport.Update(msg)
+			m.DefinitionViewport = newDef
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		case FocusTypeDefinition:
+			newType, cmd := m.TypeInfoViewport.Update(msg)
+			m.TypeInfoViewport = newType
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.Width = msg.Width
+		m.Height = msg.Height
+		m.Ready = true
+
+		// Initialize viewports with proper sizes
+		m.initializeViewports()
+		return m, tea.Batch(append(cmds, m.messageBridge.CheckMessages())...)
+
+	case tea.KeyMsg:
+		cmd := m.handleKeyPress(msg)
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+
+	case socket.ContextUpdateMsg:
+		m.Context = convertSocketContextToModel(msg.Data)
+		m.LastUpdate = time.Now()
+		m.ErrorMsg = ""
+		m.updateViewportContent()
+		cmds = append(cmds, m.messageBridge.CheckMessages())
+		return m, tea.Batch(cmds...)
+
+	case socket.ErrorMsg:
+		m.ErrorMsg = string(msg)
+		cmds = append(cmds, m.messageBridge.CheckMessages())
+		return m, tea.Batch(cmds...)
+
+	case ConnectionStateChangedMsg:
+		m.setConnectionState(msg.State)
+		cmds = append(cmds, m.messageBridge.CheckMessages())
+		return m, tea.Batch(cmds...)
+
+	case ViewportReadyMsg:
+		// Viewport is ready for the specified area
+		cmds = append(cmds, m.messageBridge.CheckMessages())
+		return m, tea.Batch(cmds...)
+
+	case ContinuePollingMsg:
+		cmds = append(cmds, m.messageBridge.CheckMessages())
+		return m, tea.Batch(cmds...)
+
+	default:
+		cmds = append(cmds, m.messageBridge.CheckMessages())
+		return m, tea.Batch(cmds...)
+	}
+}
+
+// initializeViewports sets up the viewports with proper dimensions
+func (m *App) initializeViewports() {
+	if m.Width == 0 || m.Height == 0 {
+		return
+	}
+
+	// Initialize each viewport
+	m.HoverViewport = viewport.New(m.Width-4, m.SectionHeights[FocusHover])
+	m.HoverViewport.Style = m.styles.SectionContent
+
+	m.ReferencesViewport = viewport.New(m.Width-4, m.SectionHeights[FocusReferences])
+	m.ReferencesViewport.Style = m.styles.SectionContent
+
+	m.DefinitionViewport = viewport.New(m.Width-4, m.SectionHeights[FocusDefinition])
+	m.DefinitionViewport.Style = m.styles.SectionContent
+
+	m.TypeInfoViewport = viewport.New(m.Width-4, m.SectionHeights[FocusTypeDefinition])
+	m.TypeInfoViewport.Style = m.styles.SectionContent
+
+	m.viewportsReady = true
+	m.updateViewportContent()
+}
+
+// updateViewportContent updates the content in all viewports
+func (m *App) updateViewportContent() {
+	if !m.viewportsReady || m.Context == nil {
+		return
+	}
+
+	// Update hover viewport
+	if m.Context.Hover != nil && len(m.Context.Hover) > 0 {
+		hoverContent := strings.Join(m.Context.Hover, "\n")
+		m.HoverViewport.SetContent(hoverContent)
+	}
+
+	// Update references viewport
+	if m.Context.References != nil && len(m.Context.References) > 0 {
+		var refLines []string
+		for i, ref := range m.Context.References {
+			refLines = append(refLines, fmt.Sprintf("%d. %s:%d:%d", i+1, ref.File, ref.Line, ref.Col))
+		}
+		if m.Context.ReferencesMore > 0 {
+			refLines = append(refLines, fmt.Sprintf("\n... and %d more references", m.Context.ReferencesMore))
+		}
+		m.ReferencesViewport.SetContent(strings.Join(refLines, "\n"))
+	}
+
+	// Update definition viewport
+	if m.Context.Definition != nil {
+		defContent := fmt.Sprintf("Definition: %s:%d:%d",
+			m.Context.Definition.File,
+			m.Context.Definition.Line,
+			m.Context.Definition.Col)
+		m.DefinitionViewport.SetContent(defContent)
+	}
+
+	// Update type info viewport
+	if m.Context.TypeDefinition != nil {
+		typeContent := fmt.Sprintf("Type Definition: %s:%d:%d",
+			m.Context.TypeDefinition.File,
+			m.Context.TypeDefinition.Line,
+			m.Context.TypeDefinition.Col)
+		m.TypeInfoViewport.SetContent(typeContent)
+	}
+}
+
+// handleKeyPress processes keyboard input with enhanced functionality
+func (m *App) handleKeyPress(msg tea.KeyMsg) tea.Cmd {
+	// Global keys
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return tea.Quit
+	case "?", "f1":
+		// Toggle help menu
+		return nil
+	case "ctrl+y":
+		// Copy selected text to clipboard
+		if m.SelectedText != "" {
+			// In a real implementation, this would copy to system clipboard
+			// For now, we'll just log it
+			fmt.Fprintf(os.Stderr, "Copied: %s\n", m.SelectedText)
+		}
+		return nil
+	}
+
+	// Selection mode handling
+	if m.SelectionMode != SelectionNone {
+		return m.handleSelectionKeys(msg)
+	}
+
+	// Normal mode navigation
+	switch msg.String() {
+	case "h", "left":
+		return m.navigateLeft()
+	case "j", "down":
+		return m.navigateDown()
+	case "k", "up":
+		return m.navigateUp()
+	case "l", "right":
+		return m.navigateRight()
+	case "g":
+		// Go to top of current viewport
+		return m.goToTop()
+	case "G":
+		// Go to bottom of current viewport
+		return m.goToBottom()
+	case "ctrl+u":
+		// Half page up
+		return m.halfPageUp()
+	case "ctrl+d":
+		// Half page down
+		return m.halfPageDown()
+	case "enter", " ":
+		return m.toggleCurrentField()
+	case "v":
+		// Enter visual selection mode
+		m.SelectionMode = SelectionStarted
+		m.SelectionStart = m.getCurrentViewport().YOffset
+		return nil
+	case "H":
+		m.ShowHover = !m.ShowHover
+		return nil
+	case "R":
+		m.ShowReferences = !m.ShowReferences
+		return nil
+	case "D":
+		m.ShowDefinition = !m.ShowDefinition
+		return nil
+	case "T":
+		m.ShowTypeInfo = !m.ShowTypeInfo
+		return nil
+	case "+", "=":
+		// Increase current section height
+		return m.resizeSection(2)
+	case "-", "_":
+		// Decrease current section height
+		return m.resizeSection(-2)
+	}
+
+	return m.messageBridge.CheckMessages()
+}
+
+// handleSelectionKeys handles keys in selection mode
+func (m *App) handleSelectionKeys(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "v", "escape":
+		// Exit selection mode
+		m.SelectionMode = SelectionNone
+		m.SelectedText = ""
+		return nil
+	case "j", "down":
+		m.SelectionEnd++
+		m.updateSelectedText()
+		return nil
+	case "k", "up":
+		m.SelectionEnd--
+		m.updateSelectedText()
+		return nil
+	}
+	return nil
+}
+
+// Viewport navigation methods
+func (m *App) getCurrentViewport() *viewport.Model {
+	switch m.Focus {
+	case FocusHover:
+		return &m.HoverViewport
+	case FocusReferences:
+		return &m.ReferencesViewport
+	case FocusDefinition:
+		return &m.DefinitionViewport
+	case FocusTypeDefinition:
+		return &m.TypeInfoViewport
+	}
+	return &m.HoverViewport
+}
+
+func (m *App) goToTop() tea.Cmd {
+	vp := m.getCurrentViewport()
+	vp.GotoTop()
+	return nil
+}
+
+func (m *App) goToBottom() tea.Cmd {
+	vp := m.getCurrentViewport()
+	vp.GotoBottom()
+	return nil
+}
+
+func (m *App) halfPageUp() tea.Cmd {
+	vp := m.getCurrentViewport()
+	vp.HalfViewUp()
+	return nil
+}
+
+func (m *App) halfPageDown() tea.Cmd {
+	vp := m.getCurrentViewport()
+	vp.HalfViewDown()
+	return nil
+}
+
+func (m *App) resizeSection(delta int) tea.Cmd {
+	current := m.SectionHeights[m.Focus]
+	newHeight := current + delta
+	if newHeight < 3 {
+		newHeight = 3
+	}
+	if newHeight > m.Height-10 {
+		newHeight = m.Height - 10
+	}
+	m.SectionHeights[m.Focus] = newHeight
+	m.initializeViewports()
+	return nil
+}
+
+func (m *App) updateSelectedText() {
+	// This would extract text from the current viewport
+	// For now, just update the selection range
+	m.SelectionMode = SelectionActive
+}
+
+// Navigation methods
+func (m *App) navigateDown() tea.Cmd {
+	areas := m.getVisibleAreas()
+	if len(areas) == 0 {
+		return nil
+	}
+
+	current := m.findCurrentIndex(areas)
+	m.Focus = areas[(current+1)%len(areas)]
+	return nil
+}
+
+func (m *App) navigateUp() tea.Cmd {
+	areas := m.getVisibleAreas()
+	if len(areas) == 0 {
+		return nil
+	}
+
+	current := m.findCurrentIndex(areas)
+	m.Focus = areas[(current-1+len(areas))%len(areas)]
+	return nil
+}
+
+func (m *App) navigateLeft() tea.Cmd {
+	vp := m.getCurrentViewport()
+	vp.LineUp(1)
+	return nil
+}
+
+func (m *App) navigateRight() tea.Cmd {
+	vp := m.getCurrentViewport()
+	vp.LineDown(1)
+	return nil
+}
+
+func (m *App) getVisibleAreas() []FocusArea {
+	var areas []FocusArea
+	if m.ShowHover && m.Context != nil && len(m.Context.Hover) > 0 {
+		areas = append(areas, FocusHover)
+	}
+	if m.ShowReferences && m.Context != nil && len(m.Context.References) > 0 {
+		areas = append(areas, FocusReferences)
+	}
+	if m.ShowDefinition && m.Context != nil && m.Context.Definition != nil {
+		areas = append(areas, FocusDefinition)
+	}
+	if m.ShowTypeInfo && m.Context != nil && m.Context.TypeDefinition != nil {
+		areas = append(areas, FocusTypeDefinition)
+	}
+	return areas
+}
+
+func (m *App) findCurrentIndex(areas []FocusArea) int {
+	for i, area := range areas {
+		if area == m.Focus {
+			return i
+		}
+	}
+	return 0
+}
+
+func (m *App) toggleCurrentField() tea.Cmd {
+	switch m.Focus {
+	case FocusHover:
+		m.ShowHover = !m.ShowHover
+	case FocusReferences:
+		m.ShowReferences = !m.ShowReferences
+	case FocusDefinition:
+		m.ShowDefinition = !m.ShowDefinition
+	case FocusTypeDefinition:
+		m.ShowTypeInfo = !m.ShowTypeInfo
+	}
+	return nil
+}
+
+// View renders the application
+func (m *App) View() string {
+	if !m.Ready {
+		return "Loading..."
+	}
+
+	// Convert viewports to view.ViewportData
+	var viewData = &view.ViewData{
+		Context:        convertContextToSocket(m.Context),
+		ErrorMsg:       m.ErrorMsg,
+		Connected:      m.getConnectionState() == Connected,
+		LastUpdate:     m.LastUpdate,
+		Focus:          int(m.Focus),
+		ShowHover:      m.ShowHover,
+		ShowReferences: m.ShowReferences,
+		ShowDefinition: m.ShowDefinition,
+		ShowTypeInfo:   m.ShowTypeInfo,
+		MenuVisible:    false,
+		MenuSelection:  0,
+	}
+
+	// Pass actual viewports if ready
+	if m.viewportsReady {
+		viewData.HoverViewport = &m.HoverViewport
+		viewData.ReferencesViewport = &m.ReferencesViewport
+		viewData.DefinitionViewport = &m.DefinitionViewport
+		viewData.TypeInfoViewport = &m.TypeInfoViewport
+	}
+
+	return view.Render(m.Width, m.Height, viewData, m.styles)
+}
+
+// Helper functions
+
 func convertSocketContextToModel(socketData *socket.ContextData) *Context {
 	if socketData == nil {
 		return nil
@@ -173,259 +646,26 @@ func convertSocketContextToModel(socketData *socket.ContextData) *Context {
 	}
 }
 
-// NewApp creates a new application model
-func NewApp(socketPath string) *App {
-	return &App{
-		socketPath:        socketPath,
-		ShowHover:         true,
-		ShowReferences:    true,
-		ShowDefinition:    true,
-		ShowTypeInfo:      true,
-		Focus:             FocusHover,
-		styles:            styles.New(),
-		messageBridge:     NewMessageBridge(),
-		connectionState:   Disconnected,
-		connectionTimeout: 30 * time.Second,
-		readinessSignaled: false,
+func convertContextToSocket(context *Context) *socket.ContextData {
+	if context == nil {
+		return nil
+	}
+
+	return &socket.ContextData{
+		File:            context.File,
+		Line:            context.Line,
+		Col:             context.Col,
+		Timestamp:       context.Timestamp,
+		Hover:           context.Hover,
+		Definition:      context.Definition,
+		ReferencesCount: context.ReferencesCount,
+		References:      context.References,
+		ReferencesMore:  context.ReferencesMore,
+		TypeDefinition:  context.TypeDefinition,
 	}
 }
 
-// Init initializes the application
-func (m *App) Init() tea.Cmd {
-	return tea.Batch(
-		m.startSocketServer(),
-		tea.EnterAltScreen,
-		m.messageBridge.CheckMessages(),
-	)
-}
-
-// signalReadiness sends the readiness signal to stdout (called after socket setup)
-func (m *App) signalReadiness() {
-	m.readinessMutex.Lock()
-	defer m.readinessMutex.Unlock()
-
-	if m.readinessSignaled {
-		return // Already signaled
-	}
-
-	// Signal readiness to parent (Neovim) via stdout
-	fmt.Println("TUI_READY")
-	os.Stdout.Sync() // Ensure immediate flush
-
-	m.readinessSignaled = true
-}
-
-// Update handles messages and updates the model
-func (m *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.Width = msg.Width
-		m.Height = msg.Height
-		m.Ready = true
-		return m, m.messageBridge.CheckMessages()
-
-	case tea.KeyMsg:
-		return m.handleKeyPress(msg)
-
-	case socket.ContextUpdateMsg:
-		// Convert socket.ContextData to model.Context
-		m.Context = convertSocketContextToModel(msg.Data)
-		m.LastUpdate = time.Now()
-		m.ErrorMsg = ""
-		return m, m.messageBridge.CheckMessages()
-
-	case socket.ErrorMsg:
-		m.ErrorMsg = string(msg)
-		return m, m.messageBridge.CheckMessages()
-
-	case ConnectionStateChangedMsg:
-		m.setConnectionState(msg.State)
-		
-		// Signal readiness when socket is ready and accepting connections
-		if msg.State == Connecting {
-			// Socket server is now ready - signal to parent
-			m.signalReadiness()
-		}
-		
-		return m, m.messageBridge.CheckMessages()
-
-	case TUIReadyMsg:
-		// Handle explicit readiness message if needed
-		m.signalReadiness()
-		return m, m.messageBridge.CheckMessages()
-
-	case HeartbeatMsg:
-		// Update last heartbeat time
-		return m, m.messageBridge.CheckMessages()
-
-	case ContinuePollingMsg:
-		// Continue polling for messages
-		return m, m.messageBridge.CheckMessages()
-
-	default:
-		return m, m.messageBridge.CheckMessages()
-	}
-}
-
-// handleKeyPress processes keyboard input
-func (m *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Global keys
-	switch msg.String() {
-	case "ctrl+c", "q":
-		return m, tea.Quit
-	}
-
-	// Content navigation and toggles
-	switch msg.String() {
-	case "h", "left":
-		return m.navigateLeft(), m.messageBridge.CheckMessages()
-	case "j", "down":
-		return m.navigateDown(), m.messageBridge.CheckMessages()
-	case "k", "up":
-		return m.navigateUp(), m.messageBridge.CheckMessages()
-	case "l", "right":
-		return m.navigateRight(), m.messageBridge.CheckMessages()
-	case "enter", " ":
-		return m.toggleCurrentField(), m.messageBridge.CheckMessages()
-	case "H":
-		m.ShowHover = !m.ShowHover
-		return m, m.messageBridge.CheckMessages()
-	case "R":
-		m.ShowReferences = !m.ShowReferences
-		return m, m.messageBridge.CheckMessages()
-	case "D":
-		m.ShowDefinition = !m.ShowDefinition
-		return m, m.messageBridge.CheckMessages()
-	case "T":
-		m.ShowTypeInfo = !m.ShowTypeInfo
-		return m, m.messageBridge.CheckMessages()
-	}
-
-	return m, m.messageBridge.CheckMessages()
-}
-
-// Navigation methods
-func (m *App) navigateDown() *App {
-	areas := m.getVisibleAreas()
-	if len(areas) == 0 {
-		return m
-	}
-
-	current := m.findCurrentIndex(areas)
-	m.Focus = areas[(current+1)%len(areas)]
-	return m
-}
-
-func (m *App) navigateUp() *App {
-	areas := m.getVisibleAreas()
-	if len(areas) == 0 {
-		return m
-	}
-
-	current := m.findCurrentIndex(areas)
-	m.Focus = areas[(current-1+len(areas))%len(areas)]
-	return m
-}
-
-func (m *App) navigateLeft() *App {
-	// Could be used for horizontal navigation in the future
-	return m
-}
-
-func (m *App) navigateRight() *App {
-	// Could be used for horizontal navigation in the future
-	return m
-}
-
-func (m *App) getVisibleAreas() []FocusArea {
-	var areas []FocusArea
-	if m.ShowHover {
-		areas = append(areas, FocusHover)
-	}
-	if m.ShowReferences {
-		areas = append(areas, FocusReferences)
-	}
-	if m.ShowDefinition {
-		areas = append(areas, FocusDefinition)
-	}
-	if m.ShowTypeInfo {
-		areas = append(areas, FocusTypeDefinition)
-	}
-	return areas
-}
-
-func (m *App) findCurrentIndex(areas []FocusArea) int {
-	for i, area := range areas {
-		if area == m.Focus {
-			return i
-		}
-	}
-	return 0
-}
-
-// toggleCurrentField toggles the currently focused field
-func (m *App) toggleCurrentField() *App {
-	switch m.Focus {
-	case FocusHover:
-		m.ShowHover = !m.ShowHover
-	case FocusReferences:
-		m.ShowReferences = !m.ShowReferences
-	case FocusDefinition:
-		m.ShowDefinition = !m.ShowDefinition
-	case FocusTypeDefinition:
-		m.ShowTypeInfo = !m.ShowTypeInfo
-	}
-	return m
-}
-
-// View renders the application
-func (m *App) View() string {
-	if !m.Ready {
-		return "Loading..."
-	}
-
-	// Create the main view
-	var contextData *socket.ContextData
-	if m.Context != nil {
-		contextData = &socket.ContextData{
-			File:            m.Context.File,
-			Line:            m.Context.Line,
-			Col:             m.Context.Col,
-			Timestamp:       m.Context.Timestamp,
-			Hover:           m.Context.Hover,
-			Definition:      m.Context.Definition,
-			ReferencesCount: m.Context.ReferencesCount,
-			References:      m.Context.References,
-			ReferencesMore:  m.Context.ReferencesMore,
-			TypeDefinition:  m.Context.TypeDefinition,
-		}
-	}
-
-	connected := m.getConnectionState() == Connected
-
-	content := view.Render(m.Width, m.Height, &view.ViewData{
-		Context:        contextData,
-		ErrorMsg:       m.ErrorMsg,
-		Connected:      connected,
-		LastUpdate:     m.LastUpdate,
-		Focus:          int(m.Focus),
-		ShowHover:      m.ShowHover,
-		ShowReferences: m.ShowReferences,
-		ShowDefinition: m.ShowDefinition,
-		ShowTypeInfo:   m.ShowTypeInfo,
-		MenuVisible:    false,
-		MenuSelection:  0,
-		// Viewport fields removed
-		HoverViewport:      nil,
-		ReferencesViewport: nil,
-		DefinitionViewport: nil,
-		TypeInfoViewport:   nil,
-	}, m.styles)
-
-	return content
-}
-
-// Connection state management (thread-safe)
+// Connection state management
 func (m *App) setConnectionState(state ConnectionState) {
 	m.connMutex.Lock()
 	defer m.connMutex.Unlock()
@@ -438,7 +678,7 @@ func (m *App) getConnectionState() ConnectionState {
 	return m.connectionState
 }
 
-// startSocketServer initializes the Unix socket server with optimized settings
+// Socket server setup and management
 func (m *App) startSocketServer() tea.Cmd {
 	return func() tea.Msg {
 		// Remove existing socket file
@@ -460,12 +700,10 @@ func (m *App) startSocketServer() tea.Cmd {
 	}
 }
 
-// acceptConnections runs in a goroutine to handle incoming connections
 func (m *App) acceptConnections() {
 	for {
 		conn, err := m.socketListener.Accept()
 		if err != nil {
-			// Listener closed, exit gracefully
 			m.messageBridge.SendMessage(socket.ErrorMsg("Socket listener closed"))
 			return
 		}
@@ -475,7 +713,6 @@ func (m *App) acceptConnections() {
 	}
 }
 
-// handleNewConnection sets up a new client connection with optimized settings
 func (m *App) handleNewConnection(conn net.Conn) {
 	// Optimize socket for low-latency communication
 	m.optimizeSocket(conn)
@@ -498,7 +735,6 @@ func (m *App) handleNewConnection(conn net.Conn) {
 	go m.handlePersistentConnection(conn)
 }
 
-// optimizeSocket applies performance optimizations to the socket connection
 func (m *App) optimizeSocket(conn net.Conn) {
 	if unixConn, ok := conn.(*net.UnixConn); ok {
 		// Get underlying file descriptor for low-level optimizations
@@ -507,24 +743,16 @@ func (m *App) optimizeSocket(conn net.Conn) {
 			defer file.Close()
 			fd := int(file.Fd())
 
-			// Set 32KB receive buffer (guide.md recommendation)
+			// Set optimal buffer sizes
 			syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 32*1024)
-			// Set 32KB send buffer  
 			syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 32*1024)
-			// Disable Nagle's algorithm equivalent for Unix sockets (TCP_NODELAY equivalent)
 			syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
 		}
 	}
 }
 
-// handlePersistentConnection manages the lifecycle of a persistent connection with optimized buffering
 func (m *App) handlePersistentConnection(conn net.Conn) {
-	// Get buffer from pool for this connection
-	scannerBuffer := scannerBufferPool.Get().([]byte)
 	defer func() {
-		// Return buffer to pool after connection closes
-		scannerBufferPool.Put(scannerBuffer[:0]) // Reset length but keep capacity
-		
 		conn.Close()
 		m.connMutex.Lock()
 		if m.clientConn == conn {
@@ -533,19 +761,15 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 		}
 		m.connMutex.Unlock()
 
-		// Notify main loop of disconnection
 		m.messageBridge.SendMessage(ConnectionStateChangedMsg{State: Disconnected})
 	}()
 
-	// Set up buffered reader for newline-delimited messages using pooled buffer
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(scannerBuffer, 1024*1024) // Use pooled buffer, 1MB max
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	// Set initial read timeout
 	conn.SetReadDeadline(time.Now().Add(m.connectionTimeout))
 
 	for scanner.Scan() {
-		// Reset read timeout on each message
 		conn.SetReadDeadline(time.Now().Add(m.connectionTimeout))
 
 		line := scanner.Text()
@@ -553,14 +777,12 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 			continue
 		}
 
-		// Parse JSON message
 		var msg socket.Message
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			m.messageBridge.SendMessage(socket.ErrorMsg(fmt.Sprintf("Failed to parse message: %v", err)))
 			continue
 		}
 
-		// Handle different message types
 		switch msg.Type {
 		case "context_update":
 			if contextData, ok := msg.ExtractContextData(); ok {
@@ -570,8 +792,6 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 			}
 
 		case "cursor_pos":
-			// Fast path for cursor position updates - could be used for optimization
-			// For now, just treat as context update but could be optimized further
 			if contextData, ok := msg.ExtractContextData(); ok {
 				m.messageBridge.SendMessage(socket.ContextUpdateMsg{Data: contextData})
 			}
@@ -580,12 +800,10 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 			if pingData, ok := msg.ExtractPingData(); ok {
 				m.handlePing(conn, pingData.Timestamp)
 			} else {
-				// Fallback to message timestamp
 				m.handlePing(conn, msg.Timestamp)
 			}
 
 		case "disconnect":
-			// Client requested clean disconnect
 			return
 
 		case "error":
@@ -596,18 +814,15 @@ func (m *App) handlePersistentConnection(conn net.Conn) {
 			}
 
 		default:
-			// Unknown message type, log but continue
 			m.messageBridge.SendMessage(socket.ErrorMsg(fmt.Sprintf("Unknown message type: %s", msg.Type)))
 		}
 	}
 
-	// Check for scanner errors
 	if err := scanner.Err(); err != nil {
 		m.messageBridge.SendMessage(socket.ErrorMsg(fmt.Sprintf("Connection error: %v", err)))
 	}
 }
 
-// handlePing responds to ping messages with pong
 func (m *App) handlePing(conn net.Conn, clientTimestamp int64) {
 	pong := map[string]interface{}{
 		"type":             "pong",
@@ -620,39 +835,10 @@ func (m *App) handlePing(conn net.Conn, clientTimestamp int64) {
 		return
 	}
 
-	// Send pong response with newline delimiter
 	conn.Write(append(data, '\n'))
-
-	// Update heartbeat in main loop
 	m.messageBridge.SendMessage(HeartbeatMsg{Timestamp: time.Now().UnixMilli()})
 }
 
-// sendToClient sends a message to the connected client (if any)
-func (m *App) sendToClient(message interface{}) error {
-	m.connMutex.RLock()
-	conn := m.clientConn
-	m.connMutex.RUnlock()
-
-	if conn == nil {
-		return fmt.Errorf("no client connected")
-	}
-
-	data, err := json.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %v", err)
-	}
-
-	// Send with newline delimiter
-	_, err = conn.Write(append(data, '\n'))
-	if err != nil {
-		// Connection failed, will be cleaned up by connection handler
-		return fmt.Errorf("failed to write to connection: %v", err)
-	}
-
-	return nil
-}
-
-// GetConnectionStatus returns current connection information
 func (m *App) GetConnectionStatus() map[string]interface{} {
 	m.connMutex.RLock()
 	defer m.connMutex.RUnlock()
