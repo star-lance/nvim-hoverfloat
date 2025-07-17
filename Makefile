@@ -1,4 +1,4 @@
-# Makefile for nvim-hoverfloat - Fixed build configuration
+# Makefile for nvim-hoverfloat - Complete fixed build configuratio# Makefile for nvim-hoverfloat - Complete fixed build configuration
 
 .PHONY: build build-debug install install-debug clean stop help status test test-quick
 
@@ -46,7 +46,7 @@ build-debug:
 install: build $(INSTALL_DIR)
 	@printf "$(BLUE)[INSTALL]$(RESET) Installing $(BINARY_NAME) to $(INSTALL_DIR)...\n"
 	@# Stop any running instances gracefully
-	@pkill -f "$(BINARY_NAME)" || true
+	@pkill -f "$(BINARY_NAME)" 2>/dev/null || true
 	@sleep 1
 	@# Install the binary
 	@cp $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
@@ -57,7 +57,7 @@ install: build $(INSTALL_DIR)
 install-debug: build-debug $(INSTALL_DIR)
 	@printf "$(BLUE)[INSTALL]$(RESET) Installing $(DEBUG_BINARY_NAME) to $(INSTALL_DIR)...\n"
 	@# Stop any running instances gracefully
-	@pkill -f "$(DEBUG_BINARY_NAME)" || true
+	@pkill -f "$(DEBUG_BINARY_NAME)" 2>/dev/null || true
 	@sleep 1
 	@# Install the binary
 	@cp $(BUILD_DIR)/$(DEBUG_BINARY_NAME) $(INSTALL_DIR)/$(DEBUG_BINARY_NAME)
@@ -67,7 +67,7 @@ install-debug: build-debug $(INSTALL_DIR)
 # Stop all processes
 stop:
 	@printf "$(CYAN)[PROCESS]$(RESET) Stopping all nvim-context-tui processes...\n"
-	@pkill -f "nvim-context-tui" || printf "$(YELLOW)[INFO]$(RESET) No processes found\n"
+	@pkill -f "nvim-context-tui" 2>/dev/null || printf "$(YELLOW)[INFO]$(RESET) No processes found\n"
 	@printf "$(GREEN)[SUCCESS]$(RESET) Process stop command sent\n"
 
 # Show current build status
@@ -105,7 +105,7 @@ clean:
 	@printf "$(CYAN)[CLEAN]$(RESET) Cleaning build artifacts...\n"
 	@rm -rf $(BUILD_DIR)
 	@# Also clean Go module cache for this project
-	@cd $(GO_MOD_DIR) && go clean -cache -modcache -testcache || true
+	@cd $(GO_MOD_DIR) && go clean -cache 2>/dev/null || true
 	@printf "$(GREEN)[SUCCESS]$(RESET) Clean complete\n"
 
 # Test targets
@@ -127,14 +127,6 @@ test:
 		chmod +x tests/run_real_tests.sh && tests/run_real_tests.sh; \
 	else \
 		printf "$(YELLOW)[WARNING]$(RESET) No test runner found\n"; \
-	fi
-
-test-with-lsp:
-	@printf "$(BLUE)[TEST]$(RESET) Running tests with LSP integration...\n"
-	@if [ -f "tests/run_tests_unified.sh" ]; then \
-		chmod +x tests/run_tests_unified.sh && tests/run_tests_unified.sh --with-lsp; \
-	else \
-		printf "$(YELLOW)[WARNING]$(RESET) No unified test runner found\n"; \
 	fi
 
 # Development targets
@@ -173,7 +165,6 @@ help:
 	@printf "$(CYAN)Testing:$(RESET)\n"
 	@echo "  test                   Run all tests"
 	@echo "  test-quick             Run quick tests (no LSP required)"
-	@echo "  test-with-lsp          Run tests with LSP integration"
 	@echo ""
 	@printf "$(CYAN)Utility:$(RESET)\n"
 	@echo "  status                 Show build and install status"
