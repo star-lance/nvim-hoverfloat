@@ -6,7 +6,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/model"
+	"nvim-hoverfloat/cmd/context-tui/internal/model"
 )
 
 func main() {

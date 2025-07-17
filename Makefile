@@ -1,4 +1,4 @@
-# Makefile for nvim-hoverfloat - Fixed paths and simplified
+# Makefile for nvim-hoverfloat - Fixed build configuration
 
 .PHONY: build build-debug install install-debug clean stop help status test test-quick
 
@@ -13,9 +13,9 @@ GO_MOD_DIR := cmd/context-tui
 $(INSTALL_DIR):
 	@mkdir -p $(INSTALL_DIR)
 
-# Go build flags
-GO_PROD_FLAGS := -ldflags="-s -w" -trimpath
-GO_DEBUG_FLAGS := -gcflags="all=-N -l"
+# Go build flags - Fixed ldflags format
+GO_PROD_FLAGS := -ldflags "-s -w" -trimpath
+GO_DEBUG_FLAGS := -gcflags "all=-N -l"
 
 # Colors
 RED := \033[31m
@@ -32,14 +32,14 @@ all: build install
 build:
 	@printf "$(BLUE)[BUILD]$(RESET) Building $(BINARY_NAME) (production)...\n"
 	@mkdir -p $(BUILD_DIR)
-	@cd $(GO_MOD_DIR) && go build $(GO_PROD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) .
+	@cd $(GO_MOD_DIR) && go mod tidy && go build $(GO_PROD_FLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) .
 	@printf "$(GREEN)[SUCCESS]$(RESET) Production build complete: $(BUILD_DIR)/$(BINARY_NAME)\n"
 
 # Debug build
 build-debug:
 	@printf "$(BLUE)[BUILD]$(RESET) Building $(DEBUG_BINARY_NAME) (debug)...\n"
 	@mkdir -p $(BUILD_DIR)
-	@cd $(GO_MOD_DIR) && go build $(GO_DEBUG_FLAGS) -o ../../$(BUILD_DIR)/$(DEBUG_BINARY_NAME) .
+	@cd $(GO_MOD_DIR) && go mod tidy && go build $(GO_DEBUG_FLAGS) -o ../../$(BUILD_DIR)/$(DEBUG_BINARY_NAME) .
 	@printf "$(GREEN)[SUCCESS]$(RESET) Debug build complete: $(BUILD_DIR)/$(DEBUG_BINARY_NAME)\n"
 
 # Install production binary with proper process management
@@ -129,6 +129,14 @@ test:
 		printf "$(YELLOW)[WARNING]$(RESET) No test runner found\n"; \
 	fi
 
+test-with-lsp:
+	@printf "$(BLUE)[TEST]$(RESET) Running tests with LSP integration...\n"
+	@if [ -f "tests/run_tests_unified.sh" ]; then \
+		chmod +x tests/run_tests_unified.sh && tests/run_tests_unified.sh --with-lsp; \
+	else \
+		printf "$(YELLOW)[WARNING]$(RESET) No unified test runner found\n"; \
+	fi
+
 # Development targets
 dev-install: build-debug install-debug
 	@printf "$(GREEN)[DEV]$(RESET) Development build installed\n"
@@ -165,6 +173,7 @@ help:
 	@printf "$(CYAN)Testing:$(RESET)\n"
 	@echo "  test                   Run all tests"
 	@echo "  test-quick             Run quick tests (no LSP required)"
+	@echo "  test-with-lsp          Run tests with LSP integration"
 	@echo ""
 	@printf "$(CYAN)Utility:$(RESET)\n"
 	@echo "  status                 Show build and install status"

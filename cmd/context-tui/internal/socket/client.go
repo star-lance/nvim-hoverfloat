@@ -2,6 +2,7 @@ package socket
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -218,7 +219,7 @@ func CreateDisconnectMessage(reason string) (*Message, error) {
 // Message type constants
 const (
 	MessageTypeContextUpdate = "context_update"
-	MessageTypeCursorPos     = "cursor_pos"     // Fast cursor position updates
+	MessageTypeCursorPos     = "cursor_pos" // Fast cursor position updates
 	MessageTypePing          = "ping"
 	MessageTypePong          = "pong"
 	MessageTypeError         = "error"
@@ -246,7 +247,7 @@ func IsValidMessageType(msgType string) bool {
 
 // ExtractContextData safely extracts ContextData from a message
 func (m *Message) ExtractContextData() (*ContextData, bool) {
-	if m.Type != MessageTypeContextUpdate {
+	if m.Type != MessageTypeContextUpdate && m.Type != MessageTypeCursorPos {
 		return nil, false
 	}
 
@@ -491,7 +492,7 @@ func (l *LocationInfo) FormatLocation() string {
 	if l == nil {
 		return "Unknown location"
 	}
-	return l.File + ":" + string(rune(l.Line)) + ":" + string(rune(l.Col))
+	return fmt.Sprintf("%s:%d:%d", l.File, l.Line, l.Col)
 }
 
 // GetShortPath returns a shortened version of the file path
@@ -523,3 +524,4 @@ func (l *LocationInfo) Equals(other *LocationInfo) bool {
 	}
 	return l.File == other.File && l.Line == other.Line && l.Col == other.Col
 }
+

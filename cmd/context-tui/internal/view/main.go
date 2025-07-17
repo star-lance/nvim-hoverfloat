@@ -8,8 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
-	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
+	"nvim-hoverfloat/cmd/context-tui/internal/socket"
+	"nvim-hoverfloat/cmd/context-tui/internal/styles"
 )
 
 // ViewData contains all the data needed to render the view

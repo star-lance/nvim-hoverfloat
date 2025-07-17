@@ -13,9 +13,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/socket"
-	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/styles"
-	"github.com/star-lance/nvim-hoverfloat/cmd/context-tui/internal/view"
+	"nvim-hoverfloat/cmd/context-tui/internal/socket"
+	"nvim-hoverfloat/cmd/context-tui/internal/styles"
+	"nvim-hoverfloat/cmd/context-tui/internal/view"
 )
 
 // FocusArea represents the currently focused section
